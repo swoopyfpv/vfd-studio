@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VFD Studio Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#06080b; --panel:#0b0f14; --panel2:#10161e; --panel3:#141b24; --line:#1b2430; --line2:#26323f;
+  --text:#c9d4df; --mute:#6b7a8a; --tube:#4dffd2; --hot:#ff2e88; --warn:#ffb020; --key:#ffd23f;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; --head:"Chakra Petch",var(--mono);
+  --tlh:250px; --nmw:210px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:12px/1.45 var(--mono);overflow:hidden}
+body{display:grid;grid-template-rows:46px minmax(0,1fr) 5px var(--tlh);grid-template-columns:minmax(0,1fr)}
+button,input,select,textarea{font:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#1f2933;border-radius:6px}::-webkit-scrollbar-track{background:transparent}
+/* top bar */
+header{display:flex;align-items:center;gap:8px;padding:0 12px;min-width:0;overflow:hidden;border-bottom:1px solid var(--line);background:#080b0f}
+.logo{font:700 15px/1 var(--head);letter-spacing:.12em;color:var(--tube);text-shadow:0 0 12px #4dffd266;white-space:nowrap;margin-right:6px}
+.logo span{color:var(--hot);text-shadow:0 0 12px #ff2e8866}
+.logo small{font:500 9px/1 var(--head);color:var(--mute);letter-spacing:.2em;margin-left:6px}
+.sep{width:1px;height:22px;background:var(--line2);margin:0 4px}
+.grow{flex:1}
+.btn{background:var(--panel2);border:1px solid var(--line2);padding:5px 9px;border-radius:4px;cursor:pointer;white-space:nowrap;line-height:1.2}
+.btn:hover{border-color:var(--tube);color:#fff}
+.btn.pri{border-color:#4dffd288;color:var(--tube)}
+.btn.hot{border-color:#ff2e8888;color:var(--hot)}
+.btn.sm{padding:3px 7px;font-size:11px}
+.btn.on{background:#4dffd218;border-color:var(--tube);color:var(--tube)}
+.btn.rec.on{background:#ff2e8822;border-color:var(--hot);color:var(--hot)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.ib{background:none;border:0;color:var(--mute);cursor:pointer;padding:2px 4px;font-size:12px;line-height:1;border-radius:3px}
+.ib:hover{color:var(--tube);background:#ffffff08}
+.ib.off{opacity:.35}
+.pname{font:600 13px/1 var(--head);letter-spacing:.06em;color:#fff;background:none;border:1px solid transparent;border-radius:4px;padding:5px 7px;cursor:pointer;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pname:hover{border-color:var(--line2)}
+.menu{position:fixed;z-index:30;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:4px;min-width:200px;box-shadow:0 18px 50px #000c;display:none}
+.menu.open{display:block}
+.menu button{display:flex;width:100%;justify-content:space-between;gap:16px;background:none;border:0;padding:7px 10px;cursor:pointer;text-align:left;border-radius:4px}
+.menu button:hover{background:#4dffd214;color:#fff}
+.menu button kbd{color:var(--mute);font-size:10px}
+.menu .hr{height:1px;background:var(--line);margin:4px 0}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:4px 9px;border:1px solid var(--line2);border-radius:99px;font-size:11px;color:var(--mute);white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#3a4654;flex:none}
+.dot.on{background:var(--tube);box-shadow:0 0 8px var(--tube)}
+.dot.err{background:var(--hot);box-shadow:0 0 8px var(--hot)}
+#devHost{width:150px}
+input[type=text],input[type=number],select,textarea{background:#070a0e;border:1px solid var(--line2);border-radius:4px;padding:4px 6px;width:100%;min-width:0}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--tube)}
+input[type=range]{width:100%;accent-color:var(--tube)}
+textarea{resize:vertical;font-size:11px}
+label.ck{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+label.ck input{accent-color:var(--tube)}
+/* work area */
+.work{display:grid;grid-template-columns:232px minmax(0,1fr) 318px;min-height:0}
+.col{display:flex;flex-direction:column;min-height:0;background:var(--panel);border-right:1px solid var(--line)}
+#right{border-right:0;border-left:1px solid var(--line)}
+.ph{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);font:600 10px/1 var(--head);letter-spacing:.16em;text-transform:uppercase;color:var(--mute);flex:none}
+.scroll{overflow:auto;min-height:0}
+/* layers */
+#layers{flex:1}
+.lyr{display:flex;align-items:center;gap:4px;padding:5px 6px 5px 8px;border-left:2px solid transparent;cursor:pointer;user-select:none}
+.lyr:hover{background:#ffffff05}
+.lyr.sel{background:#4dffd20f;border-left-color:var(--tube)}
+.lyr .ic{width:18px;text-align:center;color:var(--tube);opacity:.8;font-size:11px;flex:none}
+.lyr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lyr .nm input{padding:1px 4px}
+.lyr.hid .nm{opacity:.4}
+.lyr.drop-a{box-shadow:inset 0 2px 0 var(--tube)}
+.lyr.drop-b{box-shadow:inset 0 -2px 0 var(--tube)}
+.lyr .tag{font-size:9px;color:var(--mute);text-transform:uppercase}
+.palette{border-top:1px solid var(--line);flex:none;max-height:46%;overflow:auto}
+.pg{padding:6px 10px 2px;font:600 9px/1 var(--head);letter-spacing:.18em;color:var(--mute);text-transform:uppercase}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px 8px}
+.pal{display:flex;align-items:center;gap:6px;padding:5px 7px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);cursor:grab;font-size:11px;user-select:none;white-space:nowrap;overflow:hidden}
+.pal:hover{border-color:var(--tube);color:#fff}
+.pal i{font-style:normal;color:var(--tube);width:14px;text-align:center}
+/* stage */
+#center{display:flex;flex-direction:column;min-height:0;min-width:0;background:
+  radial-gradient(900px 400px at 50% 0,#0f2a2a40,transparent 70%),repeating-linear-gradient(0deg,#ffffff03 0 1px,transparent 1px 3px),var(--bg)}
+.stbar{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--line);background:#080b0fb0;flex:none;flex-wrap:wrap}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:4px;overflow:hidden}
+.seg button{background:none;border:0;padding:4px 8px;cursor:pointer;color:var(--mute);font-size:11px}
+.seg button.on{background:#4dffd218;color:var(--tube)}
+.readout{color:var(--mute);font-size:11px;min-width:150px}
+.readout b{color:var(--tube);font-weight:600}
+#stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:24px;min-height:0}
+.bezel{position:relative;padding:14px;border-radius:10px;background:linear-gradient(180deg,#151a20,#0a0d11);border:1px solid #222b35;box-shadow:0 30px 80px #000c,inset 0 1px 0 #ffffff10;flex:none}
+.glass{position:relative;border-radius:3px;overflow:hidden;background:#020504;box-shadow:inset 0 0 0 1px #000,inset 0 0 40px #000}
+.glass canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+#cvG1{filter:blur(5px);opacity:.85;mix-blend-mode:screen;image-rendering:auto}
+#cvG2{filter:blur(16px);opacity:.55;mix-blend-mode:screen;image-rendering:auto}
+.refl{position:absolute;inset:0;pointer-events:none;background:linear-gradient(165deg,#ffffff10 0%,#ffffff03 28%,transparent 45%)}
+#cvOv{cursor:default;touch-action:none}
+.blabel{display:flex;justify-content:space-between;margin-top:8px;color:#3e4b58;font-size:10px;letter-spacing:.18em}
+.hint{color:#3e4b58;font-size:10px;text-align:center;padding:0 0 8px}
+/* inspector */
+.tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.tabs button{flex:1;background:none;border:0;border-bottom:2px solid transparent;padding:9px 4px;cursor:pointer;color:var(--mute);font:600 10px/1 var(--head);letter-spacing:.14em}
+.tabs button.on{color:var(--tube);border-bottom-color:var(--tube)}
+#insp{flex:1;padding:10px 12px 20px}
+.sec{margin:4px 0 12px}
+.sec h5{margin:10px 0 8px;font:600 10px/1 var(--head);letter-spacing:.16em;color:var(--tube);text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.sec h5 .grow{flex:1}
+.fields{display:grid;grid-template-columns:92px 1fr;gap:6px 8px;align-items:center}
+.fields>label{color:var(--mute);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fields .full{grid-column:1/-1}
+.note{color:var(--mute);font-size:11px;line-height:1.5}
+.note b{color:var(--text)}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.kp{display:grid;grid-template-columns:20px minmax(0,1fr) 64px 82px;gap:6px;align-items:center;padding:3px 0}
+.kp .lbl{color:var(--mute);font-size:11px}
+.dia{width:18px;height:18px;border:0;background:none;cursor:pointer;padding:0;display:grid;place-items:center}
+.dia::before{content:"";width:9px;height:9px;transform:rotate(45deg);border:1.5px solid var(--mute)}
+.dia.has::before{border-color:var(--key)}
+.dia.on::before{background:var(--key);border-color:var(--key);box-shadow:0 0 6px #ffd23f88}
+.dia:hover::before{border-color:#fff}
+.empty{padding:28px 10px;text-align:center;color:var(--mute)}
+.chip{display:inline-block;padding:1px 6px;border:1px solid var(--line2);border-radius:99px;font-size:10px;color:var(--mute)}
+.val{color:var(--tube)}
+.msgs{margin-top:8px;font-size:11px}
+.msgs div{padding:3px 0 3px 8px;border-left:2px solid var(--warn);margin:3px 0;color:#d9c7a0}
+.msgs div.err{border-left-color:var(--hot);color:#ffb3cf}
+.msgs div.ok{border-left-color:var(--tube);color:var(--tube)}
+/* splitter + timeline */
+#split{background:var(--line);cursor:ns-resize}
+#split:hover{background:var(--tube)}
+#tl{display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+.tlbar{display:flex;align-items:center;gap:6px;padding:5px 10px;border-bottom:1px solid var(--line);flex:none}
+.tlbar .time{font:600 13px/1 var(--mono);color:var(--tube);min-width:120px;text-align:center}
+.tlbar .time small{color:var(--mute);font-weight:400}
+.tlbar input[type=number]{width:62px}
+#tlBody{flex:1;overflow:auto;position:relative;min-height:0}
+.tlrow{display:flex;height:26px;border-bottom:1px solid #121820}
+.tlrow.sub{height:22px;background:#080b0f}
+.tlrow .nm{width:var(--nmw);flex:none;display:flex;align-items:center;gap:3px;padding:0 6px;border-right:1px solid var(--line);position:sticky;left:0;background:var(--panel);z-index:2;cursor:pointer;overflow:hidden;white-space:nowrap}
+.tlrow.sub .nm{background:#080b0f;padding-left:28px;color:var(--mute);font-size:11px}
+.tlrow.sel .nm{background:#0f1a1b;color:#fff}
+.tlrow .nm .t{flex:1;overflow:hidden;text-overflow:ellipsis}
+.tlrow .trk{flex:1;position:relative;min-width:0}
+.tlrow.sel .trk{background:#4dffd206}
+.caret{width:14px;color:var(--mute);cursor:pointer;flex:none;text-align:center}
+.bar{position:absolute;top:5px;bottom:5px;border-radius:3px;background:#4dffd230;border:1px solid #4dffd270;cursor:grab;overflow:hidden}
+.bar.always{background:repeating-linear-gradient(135deg,#4dffd212 0 6px,transparent 6px 12px);border-color:#4dffd230;cursor:pointer}
+.tlrow.sel .bar{border-color:var(--tube);background:#4dffd240}
+.tlrow.sel .bar.always{background:repeating-linear-gradient(135deg,#4dffd222 0 6px,transparent 6px 12px)}
+.bar .rp{position:absolute;top:0;bottom:0;pointer-events:none}
+.bar .h{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize}
+.bar .h.l{left:0}.bar .h.r{right:0}
+.bar .lb{position:absolute;left:8px;top:1px;font-size:10px;color:#bdf;white-space:nowrap;pointer-events:none;opacity:.75}
+.kf{position:absolute;top:50%;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;transform:rotate(45deg);background:#0b0f14;border:1.5px solid var(--key);cursor:ew-resize;z-index:1}
+.kf.hold{border-radius:0;transform:none;width:9px;height:9px;margin:-4.5px 0 0 -4.5px}
+.kf.eased{border-radius:50% 0 50% 0}
+.kf.sel{background:var(--key);box-shadow:0 0 8px #ffd23faa}
+.ruler{height:22px;position:sticky;top:0;z-index:4;display:flex;background:#080b0f;border-bottom:1px solid var(--line2)}
+.ruler .nm{width:var(--nmw);flex:none;border-right:1px solid var(--line);position:sticky;left:0;background:#080b0f;z-index:5;display:flex;align-items:center;padding:0 8px;color:var(--mute);font-size:10px;letter-spacing:.12em}
+.ruler .trk{flex:1;position:relative;cursor:ew-resize}
+.tick{position:absolute;bottom:0;width:1px;background:#2a3542}
+.tick.big{height:9px;background:#3d4c5c}.tick.sm{height:4px}
+.tick span{position:absolute;bottom:9px;left:3px;font-size:9px;color:var(--mute);white-space:nowrap}
+#ph{position:absolute;top:0;bottom:0;width:11px;margin-left:-5.5px;z-index:0;cursor:ew-resize;touch-action:none}
+#ph::before{content:"";position:absolute;top:0;bottom:0;left:5px;width:1px;background:var(--hot);box-shadow:0 0 6px var(--hot)}
+#ph:hover::before,#ph.drag::before,.ruler:hover~#ph::before{width:2px;left:4.5px}
+.phhead{position:absolute;top:0;bottom:0;width:15px;margin-left:-7.5px;cursor:ew-resize;z-index:2;touch-action:none}
+.phhead::after{content:"";position:absolute;left:1.5px;top:4px;border:6px solid transparent;border-top:9px solid var(--hot);filter:drop-shadow(0 0 4px #ff2e88aa)}
+.phhead::before{content:"";position:absolute;left:7px;top:12px;bottom:0;width:1px;background:var(--hot)}
+.tlempty{padding:22px;color:var(--mute);text-align:center}
+/* modal + toast */
+.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:40;padding:20px}
+.modal.open{display:flex}
+.mbox{background:var(--panel);border:1px solid var(--line2);border-radius:8px;width:min(720px,100%);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 30px 90px #000}
+.mbox.wide{width:min(1000px,100%)}
+.mh{padding:12px 16px;border-bottom:1px solid var(--line);font:600 12px/1 var(--head);letter-spacing:.14em;text-transform:uppercase;color:var(--tube)}
+.mb{padding:14px 16px;overflow:auto}
+.mf{padding:10px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+canvas.prev{width:100%;background:#000;border:1px solid var(--line2);border-radius:4px;image-rendering:pixelated}
+.list .item{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;margin:4px 0;cursor:pointer}
+.list .item:hover{border-color:var(--tube)}
+.list .item .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list h6{margin:12px 0 4px;font:600 10px/1 var(--head);letter-spacing:.16em;color:var(--mute);text-transform:uppercase}
+.tpl{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.tpl .card{border:1px solid var(--line2);border-radius:6px;padding:6px;cursor:pointer;background:var(--panel2)}
+.tpl .card:hover{border-color:var(--tube)}
+.tpl .card canvas{width:100%;display:block;background:#000;border-radius:3px;image-rendering:pixelated}
+.tpl .card div{padding:5px 2px 1px;font-size:11px}
+#toast{position:fixed;left:50%;bottom:calc(var(--tlh) + 24px);transform:translateX(-50%) translateY(20px);background:var(--panel2);border:1px solid var(--tube);color:var(--tube);padding:8px 14px;border-radius:5px;opacity:0;transition:.2s;pointer-events:none;z-index:50;max-width:80vw}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+kbd{font:10px var(--mono);border:1px solid var(--line2);border-radius:3px;padding:0 4px;color:var(--text)}
+table.keys{border-collapse:collapse;width:100%;table-layout:fixed}table.keys td{padding:3px 3px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}table.keys tr{cursor:pointer}
+@media (max-width:1450px){.logo small,.hide-m{display:none}#devHost{width:120px}header{gap:5px}}
+@media (max-width:1100px){.work{grid-template-columns:200px minmax(0,1fr) 280px}}
+</style>
+</head>
+<body>
+<header>
+  <button class="btn sm" id="bBack" title="Back to VFD Studio (your work is saved)">← Studio</button>
+  <div class="logo">VFD<span>//</span>BUILDER<small>STUDIO</small></div>
+  <button class="pname" id="pName" title="Project menu">—</button>
+  <button class="ib" id="pMenuBtn" title="Project menu">▾</button>
+  <div class="sep"></div>
+  <button class="ib" id="bUndo" title="Undo (Ctrl+Z)">↶</button>
+  <button class="ib" id="bRedo" title="Redo (Ctrl+Shift+Z)">↷</button>
+  <div class="sep"></div>
+  <button class="btn sm" id="bMedia" title="Import an image or animated GIF">Image<span class="hide-m"> / GIF</span>…</button>
+  <button class="btn sm" id="bFonts">Fonts…</button>
+  <button class="btn sm" id="bAI" title="Copy the AI base prompt">✦ AI prompt</button>
+  <button class="btn sm" id="bImport">Import<span class="hide-m"> JSON</span></button>
+  <button class="btn sm" id="bExport">Export<span class="hide-m"> JSON</span></button>
+  <div class="grow"></div>
+  <span class="pill"><span class="dot" id="devDot"></span><span id="devPill">Not connected</span></span>
+  <input type="text" id="devHost" value="http://vfd.local" title="Display address">
+  <button class="btn sm" id="bConnect">Connect</button>
+  <button class="btn sm pri" id="bSend" disabled title="Save the project on the display and show it">Send ▶ display</button>
+  <button class="btn sm" id="bLive" disabled title="Mirror this preview to the display, frame by frame">Live</button>
+  <button class="ib" id="bHelp" title="Shortcuts">?</button>
+</header>
+<div class="menu" id="pMenu">
+  <button data-a="new">New project…<kbd>Ctrl+Alt+N</kbd></button>
+  <button data-a="open">Open…<kbd>Ctrl+O</kbd></button>
+  <button data-a="rename">Rename</button>
+  <button data-a="dup">Duplicate project</button>
+  <div class="hr"></div>
+  <button data-a="import">Import JSON…</button>
+  <button data-a="export">Export JSON…<kbd>Ctrl+E</kbd></button>
+  <div class="hr"></div>
+  <button data-a="studio">Open VFD Studio</button>
+  <button data-a="del" style="color:var(--hot)">Delete project</button>
+</div>
+
+<div class="work">
+  <div class="col" id="left">
+    <div class="ph">Layers<span class="grow"></span><button class="ib" id="bDupL" title="Duplicate layer (Ctrl+D)">⧉</button><button class="ib" id="bDelL" title="Delete layer (Del)">✕</button></div>
+    <div class="scroll" id="layers"></div>
+    <div class="palette" id="palette"></div>
+  </div>
+  <div id="center">
+    <div class="stbar">
+      <div class="seg" id="zoomSeg"><button data-z="fit">Fit</button><button data-z="3">3×</button><button data-z="4">4×</button><button data-z="5">5×</button><button data-z="6">6×</button></div>
+      <label class="ck" title="Snap to edges, centre and other layers (hold Alt to ignore)"><input type="checkbox" id="vSnap">Snap</label>
+      <label class="ck"><input type="checkbox" id="vGrid">Pixel grid</label>
+      <label class="ck"><input type="checkbox" id="vGlow">Glow</label>
+      <label class="ck" title="Rows and columns the pixel shift can push off the display"><input type="checkbox" id="vSafe">Safe area</label>
+      <span class="grow"></span>
+      <span class="readout" id="readout"></span>
+    </div>
+    <div id="stage">
+      <div>
+        <div class="bezel" id="bezel">
+          <div class="glass" id="glass">
+            <canvas id="cvBg"></canvas><canvas id="cvPx"></canvas><canvas id="cvG1"></canvas><canvas id="cvG2"></canvas><div class="refl"></div><canvas id="cvOv"></canvas>
+          </div>
+          <div class="blabel"><span>GP1294AI · 256 × 48</span><span id="fps"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="hint">Drag layers to move · drag the corner handle to resize · drop items from the left onto the display · Space plays</div>
+  </div>
+  <div class="col" id="right">
+    <div class="tabs" id="tabs"><button data-t="layer">LAYER</button><button data-t="motion">MOTION</button><button data-t="project">PROJECT</button><button data-t="json">JSON</button></div>
+    <div class="scroll" id="insp"></div>
+  </div>
+</div>
+<div id="split" title="Drag to resize the timeline"></div>
+<div id="tl">
+  <div class="tlbar">
+    <button class="ib" id="tStart" title="To start (Home)">⏮</button>
+    <button class="ib" id="tPrevK" title="Previous keyframe ([)">◂◆</button>
+    <button class="btn sm" id="tPlay" title="Play / pause (Space)" style="min-width:34px">❚❚</button>
+    <button class="ib" id="tNextK" title="Next keyframe (])">◆▸</button>
+    <div class="time" id="tTime">0.00 s</div>
+    <span class="note">Length</span><input type="number" id="tLoop" min="0.5" step="0.5" title="Loop length in seconds"><span class="note">s</span>
+    <div class="sep"></div>
+    <button class="btn sm rec" id="tRec" title="Auto-key: moving or resizing on the display sets keyframes at the playhead (K adds a position key)">● Auto-key</button>
+    <button class="btn sm" id="tKey" title="Add position keyframe at the playhead (K)">◆ Key</button>
+    <span class="grow"></span>
+    <span class="note" id="tlHint"></span>
+    <div class="seg" id="speedSeg" title="Playback speed"><button data-s="0.25">¼×</button><button data-s="0.5">½×</button><button data-s="1">1×</button><button data-s="2">2×</button></div>
+  </div>
+  <div id="tlBody"></div>
+</div>
+
+<div class="modal" id="modal"><div class="mbox" id="mBox"><div class="mh" id="mTitle"></div><div class="mb" id="mBody"></div><div class="mf" id="mFoot"></div></div></div>
+<div id="toast"></div>
+<script>
+/*__CORE__*/
+/*__APP__*/
+</script>
+</body>
+</html>

@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VFD Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#06080b; --panel:#0c1016; --panel2:#10161e; --line:#1b2430; --line2:#26323f;
+  --text:#c9d4df; --mute:#6b7a8a; --tube:#4dffd2; --hot:#ff2e88; --warn:#ffb020;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; --head:"Chakra Petch",var(--mono);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:12px/1.45 var(--mono)}
+body{min-height:100vh;background:
+  radial-gradient(1200px 500px at 50% -200px,#0f2a2a55,transparent 70%),
+  repeating-linear-gradient(0deg,#ffffff03 0 1px,transparent 1px 3px),var(--bg)}
+button,input,select,textarea{font:inherit;color:inherit}
+header{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--line);background:#080b0fcc;position:sticky;top:0;z-index:5;backdrop-filter:blur(6px)}
+.logo{font:700 18px/1 var(--head);letter-spacing:.12em;color:var(--tube);text-shadow:0 0 12px #4dffd266}
+.logo span{color:var(--hot);text-shadow:0 0 12px #ff2e8866}
+.sub{color:var(--mute);font-size:11px;letter-spacing:.08em}
+header .grow{flex:1}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--line2);border-radius:99px;font-size:11px;color:var(--mute)}
+.dot{width:7px;height:7px;border-radius:50%;background:#3a4654}
+.dot.on{background:var(--tube);box-shadow:0 0 8px var(--tube)}
+.dot.err{background:var(--hot);box-shadow:0 0 8px var(--hot)}
+.btn{background:var(--panel2);border:1px solid var(--line2);padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--tube);color:#fff}
+.btn.pri{border-color:#4dffd288;color:var(--tube)}
+.btn.hot{border-color:#ff2e8888;color:var(--hot)}
+.btn.sm{padding:3px 7px;font-size:11px}
+.btn.on{background:#4dffd218;border-color:var(--tube);color:var(--tube)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+main{display:grid;grid-template-columns:220px minmax(0,1fr) 330px;gap:14px;padding:14px;align-items:start}
+@media (max-width:1150px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.ph{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font:600 11px/1 var(--head);letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+.ph .grow{flex:1}
+.pb{padding:10px 12px}
+.list{display:flex;flex-direction:column}
+.item{display:flex;align-items:center;gap:6px;padding:7px 12px;border-left:2px solid transparent;cursor:pointer;color:var(--text)}
+.item:hover{background:#ffffff06}
+.item.sel{background:#4dffd20d;border-left-color:var(--tube);color:#fff}
+.item .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .ty{color:var(--mute);font-size:10px;text-transform:uppercase}
+.item.hidden .nm{opacity:.4;text-decoration:line-through}
+.ib{background:none;border:0;color:var(--mute);cursor:pointer;padding:0 3px;font-size:12px}
+.ib:hover{color:var(--tube)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+/* display */
+.stage{padding:22px 18px 16px}
+.bezel{position:relative;margin:0 auto;max-width:1100px;padding:16px;border-radius:10px;
+  background:linear-gradient(180deg,#151a20,#0a0d11);border:1px solid #222b35;
+  box-shadow:0 30px 80px #000c,inset 0 1px 0 #ffffff10}
+.glass{position:relative;border-radius:4px;overflow:hidden;background:#020504;aspect-ratio:256/48;
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 40px #000}
+.glass canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+#cvGlow1{filter:blur(5px);opacity:.85;mix-blend-mode:screen;image-rendering:auto}
+#cvGlow2{filter:blur(16px);opacity:.55;mix-blend-mode:screen;image-rendering:auto}
+.mesh{position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(60deg,#ffffff05 0 1px,transparent 1px 7px),repeating-linear-gradient(-60deg,#ffffff05 0 1px,transparent 1px 7px)}
+.fil{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,#ff9a5a18 20%,#ff9a5a22 50%,#ff9a5a18 80%,transparent);pointer-events:none}
+.refl{position:absolute;inset:0;pointer-events:none;background:linear-gradient(165deg,#ffffff12 0%,#ffffff03 28%,transparent 45%,transparent 80%,#ffffff06)}
+#cvOver{cursor:crosshair;touch-action:none}
+.bezel-label{display:flex;justify-content:space-between;margin-top:10px;color:#3e4b58;font-size:10px;letter-spacing:.18em}
+.ctrls{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;padding:12px}
+.cg{border:1px solid var(--line);border-radius:5px;padding:10px;background:var(--panel2)}
+.cg h4{margin:0 0 8px;font:600 10px/1 var(--head);letter-spacing:.16em;color:var(--mute);text-transform:uppercase}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:4px;overflow:hidden}
+.seg button{background:none;border:0;padding:5px 9px;cursor:pointer;color:var(--mute)}
+.seg button.on{background:#4dffd218;color:var(--tube)}
+input[type=range]{width:100%;accent-color:var(--tube)}
+input[type=text],input[type=number],input[type=datetime-local],select,textarea{background:#070a0e;border:1px solid var(--line2);border-radius:4px;padding:5px 7px;width:100%;min-width:0}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--tube)}
+textarea{resize:vertical;font-size:11px}
+label.ck{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
+label.ck input{accent-color:var(--tube)}
+.readout{color:var(--mute);font-size:11px;min-height:16px}
+.readout b{color:var(--tube);font-weight:600}
+/* inspector */
+.fields{display:grid;grid-template-columns:86px 1fr;gap:6px 8px;align-items:center}
+.fields label{color:var(--mute);font-size:11px}
+.fields .full{grid-column:1/-1}
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tabs button{flex:1;background:none;border:0;border-bottom:2px solid transparent;padding:8px;cursor:pointer;color:var(--mute);font:600 10px/1 var(--head);letter-spacing:.14em}
+.tabs button.on{color:var(--tube);border-bottom-color:var(--tube)}
+.note{color:var(--mute);font-size:11px;line-height:1.5}
+.note b{color:var(--text)}
+.hr{height:1px;background:var(--line);margin:10px 0}
+/* modal */
+.modal{position:fixed;inset:0;background:#000b;display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+.modal.open{display:flex}
+.mbox{background:var(--panel);border:1px solid var(--line2);border-radius:8px;width:min(760px,100%);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 30px 90px #000}
+.mbox .ph{font-size:12px;color:var(--tube)}
+.mbody{padding:14px;overflow:auto}
+.mfoot{display:flex;gap:8px;justify-content:flex-end;padding:10px 14px;border-top:1px solid var(--line)}
+table.wire{border-collapse:collapse;width:100%}
+table.wire td,table.wire th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+table.wire th{color:var(--mute);font-weight:400}
+table.wire td:nth-child(2){color:var(--tube)}
+.prev{width:100%;image-rendering:pixelated;background:#000;border:1px solid var(--line2);border-radius:4px}
+.tl{position:relative;margin-top:10px}
+.tlrow{display:grid;grid-template-columns:130px 1fr;align-items:center;gap:8px;height:22px}
+.tlname{font-size:11px;color:var(--mute);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}
+.tlrow.sel .tlname{color:var(--tube)}
+.tltrack{position:relative;height:16px;background:#070a0e;border:1px solid var(--line);border-radius:3px}
+.tlbar{position:absolute;top:1px;bottom:1px;background:#4dffd22a;border:1px solid var(--tube);border-radius:2px;cursor:grab;overflow:hidden;touch-action:none}
+.tlbar.sel{background:#ff2e8833;border-color:var(--hot)}
+.tlbar.always{background:repeating-linear-gradient(45deg,#ffffff0d 0 4px,transparent 4px 8px);border-color:var(--line2);cursor:pointer}
+.tlbar .h{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize}
+.tlbar .h.l{left:0}.tlbar .h.r{right:0}
+.tlbar .ramp{position:absolute;top:0;bottom:0;background:#4dffd255;pointer-events:none}
+.tlhead{position:absolute;top:0;bottom:0;width:2px;background:var(--hot);pointer-events:none;box-shadow:0 0 6px var(--hot)}
+.sysgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.sys{border:1px solid var(--line);border-radius:4px;padding:6px 8px;background:var(--panel2)}
+.sys .k{color:var(--mute);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+.sys .v{color:var(--text);font-size:13px;margin-top:2px}
+.sys .bar{height:3px;background:#1b2430;margin-top:5px;border-radius:2px;overflow:hidden}
+.sys .bar i{display:block;height:100%;background:var(--tube)}
+.sys .bar i.warn{background:var(--warn)}.sys .bar i.hot{background:var(--hot)}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#0c1016;border:1px solid var(--tube);color:var(--tube);padding:8px 14px;border-radius:4px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="logo">VFD<span>//</span>STUDIO</div>
+    <div class="sub">GP1294AI · 256×48 · ESP32-S3</div>
+  </div>
+  <div class="grow"></div>
+  <button class="btn sm" id="btnWiring">Wiring</button>
+  <span class="pill"><span class="dot" id="devDot"></span><span id="devPill">No device</span></span>
+</header>
+
+<main>
+  <!-- projects -->
+  <section class="panel">
+    <div class="ph">Projects<span class="grow"></span><button class="btn sm" id="btnNew">+ New</button></div>
+    <div class="list" id="projList"></div>
+    <div class="pb">
+      <div class="row">
+        <button class="btn sm" id="btnDup">Duplicate</button>
+        <button class="btn sm" id="btnDel">Delete</button>
+        <button class="btn sm" id="btnRename">Rename</button>
+      </div>
+      <div class="hr"></div>
+      <div class="row">
+        <button class="btn sm" id="btnImgImport">Import image</button>
+        <button class="btn sm" id="btnAnimImport">Import GIF / animation</button>
+        <button class="btn sm" id="btnCodeImport">Import U8g2 code</button>
+        <button class="btn sm" id="btnJsonImport">Import JSON</button>
+        <button class="btn sm" id="btnExport">Export JSON</button>
+      </div>
+      <div class="hr"></div>
+      <button class="btn sm" id="btnReset">Restore demo projects</button>
+    </div>
+  </section>
+
+  <!-- display -->
+  <section>
+    <div class="panel">
+      <div class="stage">
+        <div class="bezel">
+          <div class="glass" id="glass">
+            <canvas id="cvBg"></canvas>
+            <canvas id="cvPx"></canvas>
+            <canvas id="cvGlow1"></canvas>
+            <canvas id="cvGlow2"></canvas>
+            <div class="mesh" id="mesh"></div>
+            <div class="fil" style="top:22%"></div><div class="fil" style="top:50%"></div><div class="fil" style="top:78%"></div>
+            <div class="refl"></div>
+            <canvas id="cvOver"></canvas>
+          </div>
+          <div class="bezel-label"><span>EEI · GP1294AI</span><span id="fps">—</span><span>256 × 48</span></div>
+        </div>
+      </div>
+      <div class="readout" style="padding:0 18px 4px" id="readout">Hover the display for coordinates · drag to move the selected layer · arrow keys nudge</div>
+      <div class="ctrls">
+        <div class="cg">
+          <h4>Time</h4>
+          <div class="seg" id="timeSeg">
+            <button data-m="live" class="on">LIVE</button><button data-m="x10">×10</button><button data-m="x60">×60</button><button data-m="x600">×600</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <input type="datetime-local" id="timeSet" step="1" style="flex:1">
+            <button class="btn sm" id="btnTimeSet">Set</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn sm" id="btnJump">Jump to :57</button>
+            <button class="btn sm" id="btnGlitch">Trigger glitch</button>
+          </div>
+        </div>
+        <div class="cg">
+          <h4>Tube</h4>
+          <div class="fields">
+            <label>Brightness</label><input type="range" id="bright" min="0" max="255">
+            <label>Tint</label>
+            <select id="tint">
+              <option value="#4dffd2">Teal (native)</option>
+              <option value="#56c8ff">Ice blue</option>
+              <option value="#7dff6a">Green filter</option>
+              <option value="#ffb547">Amber filter</option>
+              <option value="#ff4fa3">Magenta filter</option>
+            </select>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label class="ck"><input type="checkbox" id="optGlow" checked>Glow</label>
+            <label class="ck"><input type="checkbox" id="optDots" checked>Dot grid</label>
+            <label class="ck"><input type="checkbox" id="optMesh" checked>Mesh</label>
+          </div>
+        </div>
+        <div class="cg">
+          <h4>Project</h4>
+          <div class="row">
+            <select id="optShift" title="Moves the whole image by 1 px every 5 minutes to spread phosphor wear" style="width:auto">
+              <option value="off">Pixel shift off</option><option value="pos">Pixel shift +1 px</option><option value="neg">Pixel shift −1 px</option><option value="both">Pixel shift ±1 px</option></select>
+            <label class="ck" title="Marks the rows and columns the shift can push off the display"><input type="checkbox" id="optSafe">Safe area</label>
+          </div>
+          <div class="fields" style="margin-top:8px">
+            <label>Language</label>
+            <select id="lang"><option value="en">English</option><option value="de">Deutsch</option></select>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn sm" id="btnFonts">Fonts…</button>
+            <button class="btn sm" id="btnSnap">Frame → XBM</button>
+          </div>
+        </div>
+        <div class="cg">
+          <h4>Weather data</h4>
+          <p class="note" id="wxState" style="margin:0 0 8px">Sample data</p>
+          <div class="row"><button class="btn sm" id="btnWx">Location…</button><button class="btn sm" id="btnWxRefresh">Refresh</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="ph">Timeline<span class="grow"></span><span id="tlTime" style="text-transform:none;letter-spacing:0;font-family:var(--mono);font-weight:400"></span></div>
+      <div class="pb">
+        <div class="row">
+          <span class="note">Loop</span><input type="number" id="tlLoop" min="0" step="0.5" style="width:76px"><span class="note">s</span>
+          <button class="btn sm" id="tlPlay" title="Play / pause the preview">❚❚</button>
+          <button class="btn sm" id="tlStart" title="Restart the sequence">⏮</button>
+          <input type="range" id="tlScrub" min="0" max="1000" value="0" style="flex:1;min-width:140px">
+        </div>
+        <div class="tl" id="tlTracks"></div>
+        <p class="note" id="tlNote"></p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="ph">Device<span class="grow"></span><span id="devInfo" style="text-transform:none;letter-spacing:0;font-family:var(--mono);font-weight:400"></span></div>
+      <div class="pb">
+        <div class="row">
+          <input type="text" id="devHost" value="http://vfd.local" style="flex:1;min-width:180px">
+          <button class="btn" id="btnConnect">Connect</button>
+          <button class="btn pri" id="btnSend" disabled>Send project</button>
+          <button class="btn" id="btnLive" disabled>Live mirror</button>
+        </div>
+        <p class="note" id="devNote">Open this studio from the display itself (http://vfd.local) to send projects, mirror the preview live and change settings over Wi-Fi.</p>
+        <div id="devMore" style="display:none">
+          <div class="hr"></div>
+          <h4 class="ph" style="padding:0 0 6px;border:0">System</h4>
+          <div class="sysgrid" id="sysGrid"></div>
+          <div class="hr"></div>
+          <h4 class="ph" style="padding:0 0 6px;border:0">Stored on the display</h4>
+          <div class="list" id="devProjects"></div>
+          <div class="hr"></div>
+          <div class="row">
+            <input type="text" id="msgText" placeholder="Message to show, e.g. RENDER DONE" style="flex:1;min-width:160px">
+            <input type="number" id="msgSec" value="10" min="1" style="width:64px" title="Seconds">
+            <button class="btn" id="btnMsg">Show message</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn sm" id="btnSettings">Settings</button>
+            <button class="btn sm" id="btnFw">Firmware update</button>
+            <button class="btn sm" id="btnStudioUp">Studio update</button>
+            <button class="btn sm" id="btnReinit" title="Resets the display controller. Use it if the image freezes.">Re-init display</button>
+            <button class="btn sm" id="btnBuilderUp">Install Builder</button>
+            <a class="btn sm pri" id="btnBuilderOpen" href="/builder" style="display:none;text-decoration:none">Open Builder</a>
+            <button class="btn sm" id="btnReboot">Reboot</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- layers + inspector -->
+  <section class="panel">
+    <div class="tabs"><button data-t="layers" class="on">LAYERS</button><button data-t="json">JSON</button></div>
+    <div id="tabLayers">
+      <div class="ph" style="border-top:0">
+        <select id="addType" style="flex:1"></select>
+        <button class="btn sm" id="btnAdd">+ Add</button>
+      </div>
+      <div class="list" id="layerList"></div>
+      <div class="ph">Inspector</div>
+      <div class="pb" id="inspector"></div>
+    </div>
+    <div id="tabJson" style="display:none" class="pb">
+      <textarea id="jsonArea" rows="28" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn pri sm" id="btnJsonApply">Apply</button><span class="note" id="jsonErr"></span></div>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modal"><div class="mbox"><div class="ph" id="mTitle"></div><div class="mbody" id="mBody"></div><div class="mfoot" id="mFoot"></div></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/*__CORE__*/
+/*__APP__*/
+</script>
+</body>
+</html>

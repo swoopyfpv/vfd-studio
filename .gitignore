@@ -1,0 +1,9 @@
+*.zip
+*.bin
+build/
+node_modules/
+__pycache__/
+test/c_render
+test/spisim/sim
+test/*.txt
+.DS_Store
