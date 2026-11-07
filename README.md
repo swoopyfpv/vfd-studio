@@ -3,6 +3,14 @@
 ## Video
 https://youtu.be/l3FNjZksX_U
 
+## Device
+i used a:
+GP1294AI 256×48 VFD
+EPC-INBN0BV1294UD from EEI TECHNOLOGY ELECTRONIC STUDIO
+(the one with all electronics, light sensor, usb c input, not just the module)
+
+## Description
+
 Firmware and web apps for a **GP1294AI 256×48 VFD** (EEI Technology module EPC-INBN0BV1294UD) driven by an **ESP32-S3 Super Mini** over Wi-Fi.
 
 - **Firmware** (`firmware/vfd_studio`): renders projects on the display itself, serves the apps, weather, OTA updates.
