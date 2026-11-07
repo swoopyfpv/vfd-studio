@@ -91,6 +91,7 @@ python3 test/e2e_builder.py
 python3 test/e2e_http.py
 ```
 
-## Notes
+## Credits
 
-`assets/book.ino` is a third-party example sketch by upir (2023); its bitmaps become the "the-book" demo. Check its license before making this repository public.
+The project started from an example sketch by upir (MIT License): `assets/book.ino` uses his code and technique, with
+book bitmaps of my own (the "the-book" demo). License text in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

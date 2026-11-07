@@ -1,3 +1,4 @@
+// Code based on an example by upir (MIT License, Copyright (c) 2024 upir, full text in THIRD_PARTY_NOTICES.md). Book bitmaps: own artwork.
 // simple project using Arduino UNO and 128x64 SSD1306 IIC OLED Display, created by upir, 2023
 // youtube channel: https://www.youtube.com/upir_upir
 
