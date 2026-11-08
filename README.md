@@ -1,5 +1,13 @@
 # VFD Studio
 
+## Info
+Project and Structure is a bit too much, could be sorted way better, but fine for me now.
+You could just build your own projects (or let an ai make them) and build as you like.
+If you push, or do a better project link me, so i can take a look :)
+
+this was a weekend project to make use of the vfd i had laying around. coded is by claude, use with caution.
+
+
 ## Video
 https://youtu.be/l3FNjZksX_U
 
