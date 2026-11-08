@@ -1,4 +1,4 @@
-// Wi-Fi setup page served in access-point mode. %OPTIONS% and %NAME% are filled in at runtime.
+// Wi-Fi setup page served in access-point mode. %OPTIONS%, %NAME% and %ERR% are filled in at runtime.
 #pragma once
 static const char SETUP_HTML[] = R"HTML(<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>VFD setup</title>
@@ -8,7 +8,7 @@ label{display:block;color:#6b7a8a;font-size:12px;margin:14px 0 4px;letter-spacin
 select,input{width:100%;box-sizing:border-box;background:#0c1016;border:1px solid #26323f;color:#fff;padding:11px;border-radius:6px;font:inherit}
 button{margin-top:22px;width:100%;padding:13px;background:#4dffd218;border:1px solid #4dffd2;color:#4dffd2;border-radius:6px;font:inherit;letter-spacing:.1em}
 .box{max-width:420px;margin:0 auto}</style></head><body><div class="box">
-<h1>VFD//SETUP</h1><p>Connect the display to your Wi-Fi.</p>
+<h1>VFD//SETUP</h1><p>Connect the display to your Wi-Fi.</p>%ERR%
 <form method="POST" action="/wifi/save">
 <label>Network</label><select name="ssid_sel" onchange="document.getElementById('s').value=this.value">%OPTIONS%</select>
 <label>or type the network name</label><input id="s" name="ssid" autocomplete="off">
