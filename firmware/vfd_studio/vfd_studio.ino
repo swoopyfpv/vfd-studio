@@ -37,7 +37,7 @@
 #include "studio.h"
 #include "setup_page.h"
 
-#define FW_VERSION "2.5.1"
+#define FW_VERSION "2.5.2"
 #define DEMO_VERSION 4
 
 // Display transfer:
@@ -126,7 +126,10 @@ static uint8_t lastSent[256 * 6];
 static bool forceSend = true, reinitDone = false;
 static uint32_t liveUntil = 0, msgUntil = 0, msgStart = 0, statusUntil = 0, rebootAt = 0, apSince = 0, bootDown = 0, lastFrame = 0;
 static String msgText, statusL1, statusL2, statusL3;
-static String apName, apOptions;
+static String apName, apOptions, apFail, apFailHtml;
+static volatile uint8_t wifiReason = 0;           // why the station was last dropped (0 = not yet)
+static bool wifiDown = false, apAlt = false;
+static uint32_t wifiKickAt = 0, wifiDownAt = 0, wifiKicks = 0, apScreenAt = 0;
 static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinitCount = 0;
 static float renderMsAvg = 0;  // average render + transfer time per frame
 static int64_t lastFrameNo = -1;
@@ -265,6 +268,24 @@ void displayHeal() {
   vfdCmd(0xC0, pos, 2);    // display window
   vfdCmd(0x80, dmode, 1);  // display mode: normal scan
   lastContrast = -1; forceSend = true;  // contrast and a full frame follow with the next render
+}
+
+/* ---------------- Wi-Fi failure reason ---------------- */
+// The core reconnects by itself after most failures, but stops for good after some of them (e.g. AUTH_FAIL,
+// which a router can send while it is still starting or still holds the display's old session). Nothing
+// would try again after that, so the firmware starts over itself: at boot and while running (wifiWatch).
+void onWifiEvent(arduino_event_t* ev) {
+  if (ev->event_id != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+  uint8_t r = ev->event_info.wifi_sta_disconnected.reason;
+  if (r == WIFI_REASON_ASSOC_LEAVE) return;  // our own disconnect()
+  if (r != wifiReason) Serial.printf("[vfd] wifi: dropped, reason %u %s\n", r, WiFi.STA.disconnectReasonName((wifi_err_reason_t)r));
+  wifiReason = r;
+}
+String wifiReasonText() {  // "202 AUTH FAIL"
+  if (!wifiReason) return "";
+  String s = String(wifiReason) + " " + WiFi.STA.disconnectReasonName((wifi_err_reason_t)wifiReason);
+  s.replace("_", " ");
+  return s;
 }
 
 /* ---------------- system stats ---------------- */
@@ -697,6 +718,7 @@ void setupApi() {
     static uint32_t sketch = 0; if (!sketch) sketch = ESP.getSketchSize();
     d["appUsed"] = sketch; d["appTotal"] = ESP.getFreeSketchSpace();
     d["rssi"] = WiFi.RSSI(); d["ssid"] = WiFi.SSID(); d["ip"] = WiFi.localIP().toString();
+    d["wifiReason"] = wifiReasonText(); d["wifiRetries"] = wifiKicks;  // last drop reason, own reconnect attempts
     d["uptime"] = (uint32_t)(esp_timer_get_time() / 1000000);
     d["builder"] = LittleFS.exists("/builder.html.gz");
     sendJson(200, d);
@@ -933,6 +955,7 @@ void setupPortal() {
   auto page = []() {
     String h = SETUP_HTML;
     h.replace("%OPTIONS%", apOptions);
+    h.replace("%ERR%", apFailHtml);
     h.replace("%NAME%", cfg.name);
     server.send(200, "text/html", h);
   };
@@ -962,7 +985,21 @@ String htmlEscape(const String& s) {
   String o; for (char c : s) { if (c == '<') o += "&lt;"; else if (c == '>') o += "&gt;"; else if (c == '&') o += "&amp;"; else if (c == '"') o += "&quot;"; else o += c; }
   return o;
 }
+// setup screen; with a saved network that failed, the last line alternates with the reason
+void apScreen() {
+  String l3 = "THEN OPEN " + WiFi.softAPIP().toString();
+  if (apAlt && apFail.length()) l3 = apFail;
+  statusScreen("WIFI SETUP", "JOIN  " + apName, l3);
+}
 void startAP() {
+  apFail = ""; apFailHtml = "";
+  if (cfg.ssid.length()) {
+    String why = wifiReason ? wifiReasonText() : String("NO ANSWER");
+    apFail = "NO CONNECTION: " + why;
+    if (vfd::textW(std::string(apFail.c_str()), 0, 1) > 248) apFail = why;
+    apFailHtml = "<p style=\"color:#ff2e88\">Could not connect to <b>" + htmlEscape(cfg.ssid) + "</b> (" + htmlEscape(why) +
+                 "). If you change nothing, it tries again by itself once no device is connected to this setup network (3 minutes after it opened at the earliest).</p>";
+  }
   WiFi.disconnect(true);
   WiFi.mode(WIFI_AP_STA);
   statusScreen("WIFI SETUP", "SCANNING NETWORKS");
@@ -985,7 +1022,7 @@ void startAP() {
   apMode = true; apSince = millis();
   setupPortal();
   server.begin();
-  statusScreen("WIFI SETUP", "JOIN  " + apName, "THEN OPEN " + WiFi.softAPIP().toString());
+  apAlt = false; apScreenAt = millis(); apScreen();
 }
 
 static uint32_t wifiStart = 0;
@@ -996,15 +1033,34 @@ void wifiBegin() {
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
   wifiStart = millis();
 }
+void wifiKick() {  // drop whatever the driver is doing and connect from scratch
+  wifiKicks++;
+  Serial.printf("[vfd] wifi: reconnecting (%s)\n", wifiReason ? wifiReasonText().c_str() : "no reason yet");
+  WiFi.disconnect();
+  WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+}
 bool connectWifi() {
   if (!wifiStart) wifiBegin();
+  uint32_t kicked = wifiStart;
   while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 22000) {
     connectingScreen(millis() - wifiStart);
+    // start over every 8 s, unless the display is already on the network and only waiting for its address
+    if (WiFi.status() != WL_IDLE_STATUS && millis() - kicked > 8000) { wifiKick(); kicked = millis(); }
     delay(30);
   }
   if (WiFi.status() != WL_CONNECTED) return false;
   WiFi.setSleep(false);
   return true;
+}
+// while running: give the core's own retry 30 s, then start over every 60 s until the network is back
+void wifiWatch() {
+  uint32_t now = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifiDown) { wifiDown = false; Serial.printf("[vfd] wifi: back after %lu s\n", (unsigned long)((now - wifiDownAt) / 1000)); }
+    return;
+  }
+  if (!wifiDown) { wifiDown = true; wifiDownAt = now; wifiKickAt = now + 30000; Serial.println("[vfd] wifi: connection lost"); return; }
+  if ((int32_t)(now - wifiKickAt) >= 0) { wifiKickAt = now + 60000; wifiKick(); }
 }
 
 void startOnline() {
@@ -1054,6 +1110,7 @@ void setup() {
   wxMutex = xSemaphoreCreateMutex();
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   loadSettings();
+  WiFi.onEvent(onWifiEvent);                     // records why a connection attempt failed
   if (cfg.ssid.length()) wifiBegin();           // connects in the background while the logo plays
   lastBright = 230; lastContrast = -1;           // logo at 230 of 255 (scaled by the brightness limit)
   bootAnimation();
@@ -1075,8 +1132,10 @@ void loop() {
     dns.processNextRequest();
     // stored network unreachable (e.g. router still booting): retry every 3 minutes while nobody uses the portal
     if (cfg.ssid.length() && WiFi.softAPgetStationNum() == 0 && millis() - apSince > 180000) ESP.restart();
+    if (apFail.length() && !rebootAt && millis() - apScreenAt > 4000) { apScreenAt = millis(); apAlt = !apAlt; apScreen(); }
   } else {
     ArduinoOTA.handle();
+    wifiWatch();
   }
 
   // hold BOOT 5 s: forget Wi-Fi and restart in setup mode

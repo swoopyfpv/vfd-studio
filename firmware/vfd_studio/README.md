@@ -1,4 +1,4 @@
-# VFD Studio firmware 2.5.1
+# VFD Studio firmware 2.5.2
 
 ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 
@@ -94,6 +94,20 @@ The Builder's Motion tab shows the speed of the move at the playhead and can eve
 
 Logo animation with the firmware version (the logo is built from `tools/logo.py` into `logo.h`), Wi-Fi connects
 in the background meanwhile, then "CONNECTING TO WI-FI" if needed and the address (vfd.local) for 6 seconds.
+
+## Wi-Fi
+
+- **Boot:** up to 22 s to connect. If an attempt fails, the firmware starts it over every 8 s (the ESP32 core
+  retries some failures by itself, but stops for good after others, e.g. `AUTH_FAIL` from a router that is still
+  starting or still holds the display's old session).
+- **No connection:** setup network `VFD-SETUP-XXXX` (setup page at 192.168.4.1). With a saved network, the display
+  alternates "THEN OPEN …" with the reason of the last failed attempt (e.g. `NO CONNECTION: 202 AUTH FAIL`), the setup
+  page shows it too, and the display restarts every 3 minutes to try again while nobody is connected to the setup network.
+- **Connection lost while running:** the core reconnects by itself; if it is still down after 30 s, the firmware starts
+  over every 60 s until the network is back. The clock keeps running meanwhile and NTP resyncs afterwards.
+- **Diagnosis:** the serial log prints every drop with its reason (`[vfd] wifi: dropped, reason 202 AUTH_FAIL`),
+  `/api/system` returns `wifiReason` (last drop) and `wifiRetries` (own reconnect attempts since boot).
+- **Hold BOOT for 5 s:** forget the network and restart in setup mode.
 
 ## Builder
 
