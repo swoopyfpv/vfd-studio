@@ -1,4 +1,4 @@
-# VFD Studio firmware 2.5.2
+# VFD Studio firmware 2.5.3
 
 ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 
@@ -70,7 +70,7 @@ Tokens for any layer: `{CPU} {RAM} {FS} {TEMPC} {RSSI} {UPTIME} {IP}`; progress 
 The controller is set up exactly as on page 15 of the EPC-INBN0BV1294UD datasheet: reset, 10 ms wait,
 VFD mode, dimming, clear GRAM, 20 ms, window, display mode, oscillator init (0x78 0x08).
 U8g2 alone waits only 1 ms after the reset and skips the oscillator init.
-The fast SPI keeps ≥ 400 ns between bytes (datasheet tDOFF ≥ 360 ns).
+The fast SPI keeps ≥ 1200 ns between bytes (datasheet tDOFF ≥ 360 ns; 400 ns up to 2.5.2).
 
 ## Brightness limit
 
@@ -79,7 +79,10 @@ Studio → Device → Settings → Brightness limit (default 300 of 1023). Proje
 
 ## Display self-healing
 
-- Every 30 seconds the firmware re-sends the controller's mode and window settings (no reset, no flicker).
+- Normally only the changed tiles of a frame are sent. Once a second the whole frame goes out (about 10 ms), so a
+  tile the controller missed is corrected within a second instead of staying until that spot changes.
+- Every 10 seconds, at every project switch of the rotation and whenever Wi-Fi drops or returns, the firmware
+  re-sends the controller's mode and window settings (no reset, no flicker).
 - Every 5 minutes (Settings → Display refresh, 0 = off) it re-initialises the controller with a software reset
   and writes the current image straight back: a very short blink, and a frozen image comes back.
 - Studio → Device → Re-init display does a full reset at any time. System shows how many re-inits ran.
@@ -103,8 +106,18 @@ in the background meanwhile, then "CONNECTING TO WI-FI" if needed and the addres
 - **No connection:** setup network `VFD-SETUP-XXXX` (setup page at 192.168.4.1). With a saved network, the display
   alternates "THEN OPEN …" with the reason of the last failed attempt (e.g. `NO CONNECTION: 202 AUTH FAIL`), the setup
   page shows it too, and the display restarts every 3 minutes to try again while nobody is connected to the setup network.
-- **Connection lost while running:** the core reconnects by itself; if it is still down after 30 s, the firmware starts
-  over every 60 s until the network is back. The clock keeps running meanwhile and NTP resyncs afterwards.
+- **No connection after a restart** (crash, update, brown-out; the clock still knows the time): no setup network. The
+  display carries on offline with the time and the last weather (kept in RTC memory, used if at most 3 hours old) and
+  keeps trying in the background. After a power cut the time is gone, so the setup network opens as described above.
+- **Connection lost while running:** the core retries by itself for 30 s (enough for a short dropout). After that
+  its retry is switched off and the firmware makes one attempt every 30 s until the network is back; in between the
+  radio is quiet. (Before, the core searched without a pause for as long as the network was gone, and transfers to
+  the display could go wrong for just as long.) The clock keeps running and the last weather stays on the display;
+  NTP and weather resync afterwards. After every attempt the display settings and a full frame are sent again.
+- **Offline mark:** a small Wi-Fi symbol with an x in the bottom right corner (13 × 7 px) appears after 10 s without
+  Wi-Fi, or when Wi-Fi is up but two weather fetches in a row got no answer. `/api/info` returns it as `offline`.
+- **Weather retries:** after a failed fetch the next one follows after 1, 2, 4, 8, then every 15 minutes
+  (before: every 5 s), and soon after the connection is back.
 - **Diagnosis:** the serial log prints every drop with its reason (`[vfd] wifi: dropped, reason 202 AUTH_FAIL`),
   `/api/system` returns `wifiReason` (last drop) and `wifiRetries` (own reconnect attempts since boot).
 - **Hold BOOT for 5 s:** forget the network and restart in setup mode.
@@ -158,7 +171,7 @@ POST /api/display/reinit                                 reset the display contr
 ## Display transfer
 
 `#define VFD_SPI` at the top of `vfd_studio.ino`:
-`0` fast software SPI (default, ~3 MHz, about 5 ms per full frame), `1` hardware SPI (4 MHz),
+`0` fast software SPI (default, ~1.5 MHz, about 10 ms per full frame), `1` hardware SPI (4 MHz),
 `2` U8g2's own software SPI (slow, ~70 ms per frame). Only the changed parts of the image are sent.
 
 ## Files

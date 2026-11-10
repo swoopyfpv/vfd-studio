@@ -30,11 +30,12 @@ Projects are plain JSON. The browser preview and the display use the same render
 ## Features
 
 **Firmware**
-- 60 frames per second on a fixed time grid; fast software SPI (about 6 ms per frame, only changed tiles are sent); controller init per datasheet
+- 60 frames per second on a fixed time grid; fast software SPI (about 10 ms per full frame, only changed tiles are sent); controller init per datasheet
 - Brightness limit (default 300 of 1023), night mode, ±1 px pixel shift against burn-in
-- Display self-healing: settings re-sent every 30 s, soft re-init every 5 min (adjustable), manual re-init
+- Display self-healing: full frame every second, settings re-sent every 10 s and at every project switch, soft re-init every 5 min (adjustable), manual re-init
 - Boot logo animation, Wi-Fi setup portal (`VFD-SETUP-…`), mDNS name, web and Arduino OTA updates with rollback
 - Project playlist, Open-Meteo weather (no API key), NTP time with time zone, shared font library
+- Offline: time and last weather stay on the display, with a small no-Wi-Fi mark; reconnects by itself
 - Request checks: answers only to its own name or IP, and changes need the header `X-VFD: 1` (see below)
 
 **VFD Studio**

@@ -37,11 +37,11 @@
 #include "studio.h"
 #include "setup_page.h"
 
-#define FW_VERSION "2.5.2"
+#define FW_VERSION "2.5.3"
 #define DEMO_VERSION 4
 
 // Display transfer:
-// 0 = fast software SPI (default): direct register writes, ~3 MHz, about 5 ms per full frame
+// 0 = fast software SPI (default): direct register writes, ~1.5 MHz, about 10 ms per full frame
 // 1 = hardware SPI, 4 MHz
 // 2 = U8g2's own software SPI (slow, ~70 ms per frame; the method from the 2023 setup)
 #define VFD_SPI 0
@@ -56,10 +56,11 @@ U8G2_GP1294AI_256X48_F_4W_SW_SPI u8g2(U8G2_R0, /*clock=*/PIN_CLK, /*data=*/PIN_D
 
 #if VFD_SPI == 0
 // Fast software SPI for the GP1294AI (SPI mode 3: clock idles high, data taken on the rising edge, MSB first).
-// Each clock phase lasts at least 160 ns (datasheet: tCW >= 120 ns), measured with the CPU cycle counter.
-// After every byte the line rests for 400 ns (datasheet: data processing time tDOFF >= 360 ns).
+// Each clock phase lasts at least 300 ns (datasheet: tCW >= 120 ns), measured with the CPU cycle counter.
+// After every byte the line rests for 1200 ns (datasheet: data processing time tDOFF >= 360 ns).
+// Up to 2.5.2 these were 160 and 400 ns: only 11 % above the limit for tDOFF. A full frame now takes about 10 ms.
 #include "soc/gpio_reg.h"
-static uint32_t spiHalfCycles = 40, spiByteGap = 100;
+static uint32_t spiHalfCycles = 73, spiByteGap = 289;
 static inline void spiWait(uint32_t c0) { while ((uint32_t)(ESP.getCycleCount() - c0) < spiHalfCycles) {} }
 uint8_t fastSpiByte(u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr) {
   const uint32_t mClk = 1UL << PIN_CLK, mDat = 1UL << PIN_DATA, mCs = 1UL << PIN_CS;
@@ -82,8 +83,8 @@ uint8_t fastSpiByte(u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr) {
       break;
     }
     case U8X8_MSG_BYTE_INIT:
-      spiHalfCycles = ESP.getCpuFreqMHz() * 160 / 1000 + 1;
-      spiByteGap = ESP.getCpuFreqMHz() * 400 / 1000 + 1;
+      spiHalfCycles = ESP.getCpuFreqMHz() * 300 / 1000 + 1;
+      spiByteGap = ESP.getCpuFreqMHz() * 1200 / 1000 + 1;
       REG_WRITE(GPIO_OUT_W1TS_REG, mCs | mClk);              // chip deselected, clock idle high
       break;
     case U8X8_MSG_BYTE_SET_DC: break;                          // no DC line on this display
@@ -115,6 +116,8 @@ static SemaphoreHandle_t wxMutex;
 static volatile bool wxRequest = true;
 static uint32_t wxLastTry = 0, wxLastOk = 0, lastSwitch = 0;
 static String wxError = "no location set";
+static volatile uint8_t wxFails = 0;   // failed fetches in a row that never reached the weather service
+static bool wxNetFail = false;         // the last fetch failed on the way (no route, timeout, cut-off answer)
 
 static vfd::FB fb;
 static vfd::Project proj;
@@ -128,9 +131,10 @@ static uint32_t liveUntil = 0, msgUntil = 0, msgStart = 0, statusUntil = 0, rebo
 static String msgText, statusL1, statusL2, statusL3;
 static String apName, apOptions, apFail, apFailHtml;
 static volatile uint8_t wifiReason = 0;           // why the station was last dropped (0 = not yet)
+static volatile bool wifiHeal = false;            // a connection attempt just ended: bring the display back in step
 static bool wifiDown = false, apAlt = false;
 static uint32_t wifiKickAt = 0, wifiDownAt = 0, wifiKicks = 0, apScreenAt = 0;
-static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinitCount = 0;
+static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinitCount = 0, lastFullFrame = 0;
 static float renderMsAvg = 0;  // average render + transfer time per frame
 static int64_t lastFrameNo = -1;
 
@@ -280,6 +284,7 @@ void onWifiEvent(arduino_event_t* ev) {
   if (r == WIFI_REASON_ASSOC_LEAVE) return;  // our own disconnect()
   if (r != wifiReason) Serial.printf("[vfd] wifi: dropped, reason %u %s\n", r, WiFi.STA.disconnectReasonName((wifi_err_reason_t)r));
   wifiReason = r;
+  wifiHeal = true;
 }
 String wifiReasonText() {  // "202 AUTH FAIL"
   if (!wifiReason) return "";
@@ -477,6 +482,53 @@ void loadActive() {
   vfd::parseProject(DEMO_JSON[0], strlen(DEMO_JSON[0]), proj, nullptr, loadFontFile);  // fallback: built-in clock
 }
 
+/* ---------------- weather kept across restarts ---------------- */
+// The last weather sits in RTC memory, which survives a restart (crash, update, brown-out), not a power cut.
+// After a restart without network the display shows it again instead of "--". No flash wear.
+struct WxKeep {
+  uint32_t magic, sum;
+  int64_t at;                      // epoch s of the fetch
+  double v[11], hT[24], hP[24], hR[24];
+  int32_t code, nh;
+  uint8_t day;
+  char sunrise[6], sunset[6];
+};
+RTC_NOINIT_ATTR static WxKeep wxKeep;
+static uint32_t wxKeepSum(const WxKeep& k) {
+  uint32_t h = 2166136261u; const uint8_t* b = (const uint8_t*)&k.at;
+  for (size_t i = 0; i < sizeof k - offsetof(WxKeep, at); i++) h = (h ^ b[i]) * 16777619u;
+  return h;
+}
+void wxKeepSave(const vfd::Weather& W) {
+  vfd::TimeT T; if (!getTime(T)) return;
+  WxKeep k; memset(&k, 0, sizeof k);
+  k.magic = 0x56465857; k.at = T.t / 1000;
+  const double v[11] = { W.temp, W.feels, W.hum, W.rain, W.rainNow, W.pop, W.wind, W.tmax, W.tmin, W.lat, W.lon };
+  memcpy(k.v, v, sizeof v); memcpy(k.hT, W.hT, sizeof k.hT); memcpy(k.hP, W.hP, sizeof k.hP); memcpy(k.hR, W.hR, sizeof k.hR);
+  k.code = W.code; k.nh = W.nh; k.day = W.day;
+  memcpy(k.sunrise, W.sunrise, 6); memcpy(k.sunset, W.sunset, 6);
+  k.sum = wxKeepSum(k);
+  memcpy(&wxKeep, &k, sizeof k);   // byte for byte, the checksum covers the padding too
+}
+// at boot: take the kept weather if it is intact, for the same place and at most 3 hours old
+bool wxKeepRestore() {
+  WxKeep k; memcpy(&k, &wxKeep, sizeof k);
+  vfd::TimeT T;
+  if (k.magic != 0x56465857 || k.sum != wxKeepSum(k) || !getTime(T) || !cfg.hasLoc) return false;
+  int64_t age = T.t / 1000 - k.at;
+  if (age < 0 || age > 3 * 3600 || k.v[9] != cfg.lat || k.v[10] != cfg.lon || k.nh < 0 || k.nh > 24) return false;
+  vfd::Weather W;
+  W.ok = true; W.hasLoc = true; W.city = cfg.city.c_str();
+  W.temp = k.v[0]; W.feels = k.v[1]; W.hum = k.v[2]; W.rain = k.v[3]; W.rainNow = k.v[4]; W.pop = k.v[5]; W.wind = k.v[6];
+  W.tmax = k.v[7]; W.tmin = k.v[8]; W.lat = k.v[9]; W.lon = k.v[10];
+  memcpy(W.hT, k.hT, sizeof k.hT); memcpy(W.hP, k.hP, sizeof k.hP); memcpy(W.hR, k.hR, sizeof k.hR);
+  W.code = k.code; W.nh = k.nh; W.day = k.day;
+  memcpy(W.sunrise, k.sunrise, 6); W.sunrise[5] = 0; memcpy(W.sunset, k.sunset, 6); W.sunset[5] = 0;
+  xSemaphoreTake(wxMutex, portMAX_DELAY); vfd::WX = W; xSemaphoreGive(wxMutex);
+  Serial.printf("[vfd] weather: restored, %ld min old\n", (long)(age / 60));
+  return true;
+}
+
 /* ---------------- weather (Open-Meteo, no key needed) ---------------- */
 bool fetchWeather() {
   if (!cfg.hasLoc || WiFi.status() != WL_CONNECTED) { wxError = cfg.hasLoc ? "offline" : "no location set"; return false; }
@@ -489,14 +541,14 @@ bool fetchWeather() {
     "&forecast_days=2&timezone=auto", cfg.lat, cfg.lon);
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http; http.setConnectTimeout(8000); http.setTimeout(10000);
-  if (!http.begin(client, url)) { wxError = "connect failed"; return false; }
+  if (!http.begin(client, url)) { wxError = "connect failed"; wxNetFail = true; return false; }
   int code = http.GET();
-  if (code != 200) { wxError = String("HTTP ") + code; http.end(); return false; }
+  if (code != 200) { wxError = String("HTTP ") + code; wxNetFail = code < 0; http.end(); return false; }  // below 0: never got an answer
   String body = http.getString(); http.end();
   JsonDocument doc;
-  if (deserializeJson(doc, body)) { wxError = "bad response"; return false; }
+  if (deserializeJson(doc, body)) { wxError = "bad response"; wxNetFail = true; return false; }
   JsonObject c = doc["current"], d = doc["daily"], h = doc["hourly"];
-  if (c.isNull() || d.isNull() || h.isNull()) { wxError = "incomplete response"; return false; }
+  if (c.isNull() || d.isNull() || h.isNull()) { wxError = "incomplete response"; wxNetFail = false; return false; }
   vfd::Weather W;
   W.ok = true;
   W.temp = vfd::num(c["temperature_2m"], 0); W.feels = vfd::num(c["apparent_temperature"], 0); W.hum = vfd::num(c["relative_humidity_2m"], 0);
@@ -518,16 +570,22 @@ bool fetchWeather() {
   xSemaphoreTake(wxMutex, portMAX_DELAY);
   vfd::WX = W;
   xSemaphoreGive(wxMutex);
-  wxError = "";
+  wxKeepSave(W);
+  wxError = ""; wxNetFail = false;
   return true;
 }
 void weatherTask(void*) {
   for (;;) {
     uint32_t now = millis();
     bool due = wxRequest || (wxLastOk && now - wxLastOk > 15UL * 60 * 1000) || (!wxLastOk && now - wxLastTry > 60UL * 1000);
-    if (due && WiFi.status() == WL_CONNECTED && cfg.hasLoc && now - wxLastTry > 5000) {
+    // after a failure wait 1, 2, 4, 8, then 15 minutes: on a bad connection every attempt is a full TLS handshake
+    // that times out, and one every 5 s keeps the radio and the CPU busy for nothing
+    uint8_t f = wxFails;
+    uint32_t wait = (f && !wxRequest) ? min(900000UL, 30000UL << min((int)f, 5)) : 5000;
+    if (due && WiFi.status() == WL_CONNECTED && cfg.hasLoc && now - wxLastTry > wait) {
       wxRequest = false; wxLastTry = now;
-      if (fetchWeather()) wxLastOk = millis();
+      if (fetchWeather()) { wxLastOk = millis(); wxFails = 0; }
+      else if (wxFails < 250) wxFails++;
       Serial.printf("[vfd] weather: %s\n", wxError.length() ? wxError.c_str() : "ok");
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -553,8 +611,25 @@ void rotateStep() {
   int idx = -1; for (int i = 0; i < (int)pl.size(); i++) if (pl[i] == activeId) idx = i;
   for (int k = 1; k <= (int)pl.size(); k++) {
     const String& next = pl[(idx + k) % pl.size()];
-    if (LittleFS.exists(pathOf(next)) && loadProject(next)) { activeId = next; return; }
+    // A switch changes the whole image at once. Settings and a full frame go out with it, so a transfer the
+    // controller missed cannot leave parts of the previous project standing.
+    if (LittleFS.exists(pathOf(next)) && loadProject(next)) { activeId = next; displayHeal(); lastDisplayHeal = millis(); return; }
   }
+}
+
+/* ---------------- offline mark ---------------- */
+// Offline: no Wi-Fi for 10 s (a short roam shows nothing), or Wi-Fi is up but two weather fetches in a row
+// never got an answer (connected to the router, no way out). Time and the last weather stay on the display.
+bool isOffline() {
+  if (WiFi.status() != WL_CONNECTED) return wifiDown && millis() - wifiDownAt > 10000;
+  return cfg.hasLoc && wxFails >= 2 && wxNetFail;
+}
+// Wi-Fi arcs with a small x, 13 x 7 px in the bottom right corner on a cleared patch
+void drawOfflineMark() {
+  static const uint16_t rows[7] = { 0b0111111100000, 0b1000000010000, 0b0011111000000, 0b0100000100000, 0b0001110001010, 0b0000000000100, 0b0000100001010 };
+  const int x0 = 242, y0 = 40;
+  fb.color = 0; fb.box(x0 - 2, y0 - 2, 16, 10); fb.color = 1;
+  for (int y = 0; y < 7; y++) for (int x = 0; x < 13; x++) if (rows[y] >> (12 - x) & 1) fb.px(x0 + x, y0 + y);
 }
 
 /* ---------------- render loop ---------------- */
@@ -607,8 +682,8 @@ void renderStep() {
   if (msg) { pushFB(); return; }
   if (!synced) {
     fb.color = 0; fb.box(200, 40, 56, 8); fb.color = 1;
-    vfd::drawText(fb, 202, 42, apMode ? "NO WIFI" : "SYNC TIME", 0, 1);
-  }
+    vfd::drawText(fb, 202, 42, WiFi.status() != WL_CONNECTED ? "NO WIFI" : "SYNC TIME", 0, 1);
+  } else if (isOffline()) drawOfflineMark();
   pushFB();
 }
 
@@ -793,7 +868,7 @@ void setupApi() {
     d["name"] = cfg.name; d["fw"] = FW_VERSION; d["chip"] = ESP.getChipModel();
     d["ip"] = WiFi.localIP().toString(); d["rssi"] = WiFi.RSSI();
     d["heap"] = ESP.getFreeHeap(); d["psram"] = ESP.getFreePsram(); d["uptime"] = millis() / 1000;
-    d["timeSynced"] = getTime(T); d["active"] = activeId;
+    d["timeSynced"] = getTime(T); d["active"] = activeId; d["offline"] = isOffline();
     d["brightness"] = brightOverride >= 0 ? brightOverride : proj.brightness;
     d["fsUsed"] = LittleFS.usedBytes(); d["fsTotal"] = LittleFS.totalBytes();
     listProjects(d["projects"].to<JsonArray>());
@@ -1052,18 +1127,30 @@ bool connectWifi() {
   WiFi.setSleep(false);
   return true;
 }
-// while running: give the core's own retry 30 s, then start over every 60 s until the network is back
+// While running: the core retries by itself, without a pause, for as long as the network is gone. That keeps the
+// radio searching all the time, and transfers to the display can go wrong for just as long. So the core gets
+// 30 s (enough for a short dropout), then its retry is switched off and the firmware makes one attempt every
+// 30 s. In between the radio is quiet and the display gets clean frames.
 void wifiWatch() {
   uint32_t now = millis();
+  if (wifiHeal) { wifiHeal = false; displayHeal(); lastDisplayHeal = now; }
   if (WiFi.status() == WL_CONNECTED) {
-    if (wifiDown) { wifiDown = false; Serial.printf("[vfd] wifi: back after %lu s\n", (unsigned long)((now - wifiDownAt) / 1000)); }
+    if (wifiDown) {
+      wifiDown = false; Serial.printf("[vfd] wifi: back after %lu s\n", (unsigned long)((now - wifiDownAt) / 1000));
+      displayHeal(); lastDisplayHeal = now;   // the radio was busy: make sure the display is in step again
+      WiFi.setAutoReconnect(true);
+      WiFi.setSleep(false);            // also covers a start without network
+      if (wxFails > 1) wxFails = 1;    // fetch the weather soon instead of waiting out a long pause
+    }
     return;
   }
-  if (!wifiDown) { wifiDown = true; wifiDownAt = now; wifiKickAt = now + 30000; Serial.println("[vfd] wifi: connection lost"); return; }
-  if ((int32_t)(now - wifiKickAt) >= 0) { wifiKickAt = now + 60000; wifiKick(); }
+  if (!wifiDown) { wifiDown = true; wifiDownAt = now; wifiKickAt = now + 30000; Serial.println("[vfd] wifi: connection lost"); displayHeal(); lastDisplayHeal = now; return; }
+  if ((int32_t)(now - wifiKickAt) >= 0) { wifiKickAt = now + 30000; WiFi.setAutoReconnect(false); wifiKick(); }
 }
 
-void startOnline() {
+// connected = false: started without network after a restart (see setup). Everything is set up the same way and
+// begins to work as soon as wifiWatch gets the connection back.
+void startOnline(bool connected) {
   configTzTime(cfg.tz.c_str(), "pool.ntp.org", "time.cloudflare.com", "time.google.com");
   MDNS.begin(cfg.name.c_str());
   MDNS.addService("http", "tcp", 80);
@@ -1076,6 +1163,7 @@ void startOnline() {
   xTaskCreatePinnedToCore(weatherTask, "weather", 12288, nullptr, 1, nullptr, 0);
   setupApi();
   server.begin();
+  if (!connected) { Serial.println("[vfd] wifi: no connection, running offline"); return; }
   onlineScreen();
   statusUntil = millis() + 6000;
 }
@@ -1122,7 +1210,12 @@ void setup() {
   seedDemos();
   loadActive();
 
-  if (cfg.ssid.length() && connectWifi()) startOnline();
+  // No network at boot. After a restart the clock still knows the time: carry on offline with the time and the
+  // last weather, and keep trying in the background. After a power cut the time is gone: setup network, as before.
+  vfd::TimeT T;
+  wxKeepRestore();
+  if (cfg.ssid.length() && connectWifi()) startOnline(true);
+  else if (cfg.ssid.length() && getTime(T)) startOnline(false);
   else startAP();
 }
 
@@ -1162,5 +1255,9 @@ void loop() {
     renderMsAvg = renderMsAvg * 0.95f + ms * 0.05f;
   } else delay(1);
   if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); updateSys(); }
-  if (!apMode && filOn && millis() - lastDisplayHeal >= 30000) { lastDisplayHeal = millis(); displayHeal(); }
+  if (!apMode && filOn && millis() - lastDisplayHeal >= 10000) { lastDisplayHeal = millis(); displayHeal(); }
+  // Between heals only changed tiles are sent. If the controller misses one (bus or supply glitch, e.g. while the
+  // radio is working hard on a bad connection), the old content would stay there. A full frame every second
+  // (about 10 ms) limits that to one second.
+  if (!apMode && filOn && millis() - lastFullFrame >= 1000) { lastFullFrame = millis(); forceSend = true; }
 }
