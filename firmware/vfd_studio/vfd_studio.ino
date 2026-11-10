@@ -40,6 +40,17 @@
 #define FW_VERSION "2.5.3"
 #define DEMO_VERSION 4
 
+// Last weather, kept in RTC memory across restarts (see "weather kept across restarts"). Defined up here because
+// the Arduino IDE puts its generated function prototypes ahead of the first function, and they need the type.
+struct WxKeep {
+  uint32_t magic, sum;
+  int64_t at;                      // epoch s of the fetch
+  double v[11], hT[24], hP[24], hR[24];
+  int32_t code, nh;
+  uint8_t day;
+  char sunrise[6], sunset[6];
+};
+
 // Display transfer:
 // 0 = fast software SPI (default): direct register writes, ~1.5 MHz, about 10 ms per full frame
 // 1 = hardware SPI, 4 MHz
@@ -485,14 +496,6 @@ void loadActive() {
 /* ---------------- weather kept across restarts ---------------- */
 // The last weather sits in RTC memory, which survives a restart (crash, update, brown-out), not a power cut.
 // After a restart without network the display shows it again instead of "--". No flash wear.
-struct WxKeep {
-  uint32_t magic, sum;
-  int64_t at;                      // epoch s of the fetch
-  double v[11], hT[24], hP[24], hR[24];
-  int32_t code, nh;
-  uint8_t day;
-  char sunrise[6], sunset[6];
-};
 RTC_NOINIT_ATTR static WxKeep wxKeep;
 static uint32_t wxKeepSum(const WxKeep& k) {
   uint32_t h = 2166136261u; const uint8_t* b = (const uint8_t*)&k.at;
