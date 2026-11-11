@@ -41,7 +41,7 @@ Projects are plain JSON. The browser preview and the display use the same render
 
 **VFD Studio**
 - Projects: select, rotate, send, delete; live mirror; text messages with duration
-- Settings: name, time zone, location, brightness limit, auto brightness (off by default), display refresh, night mode, rotation
+- Settings: name, Wi-Fi TX limit, Bluetooth status, time zone, location, brightness limit, auto brightness (off by default), display refresh, night mode, rotation
 - System: storage, firmware slot, RAM, CPU, ambient light, chip temperature, Wi-Fi, uptime, re-init count
 - Image / GIF / U8g2 code import, XBM export, Builder install, firmware update
 

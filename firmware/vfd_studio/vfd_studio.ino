@@ -33,6 +33,7 @@
 #include <cmath>
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 
 #include "project.h"
 #include "demos.h"
@@ -40,7 +41,7 @@
 #include "studio.h"
 #include "setup_page.h"
 
-#define FW_VERSION "2.5.5"
+#define FW_VERSION "2.5.6"
 #define DEMO_VERSION 4
 
 // Last weather, kept in RTC memory across restarts (see "weather kept across restarts"). Defined up here because
@@ -116,6 +117,7 @@ Preferences prefs;
 
 struct Settings {
   String ssid, pass, name = "vfd", tz = "CET-1CEST,M3.5.0,M10.5.0/3";
+  bool wifiLowTx = true;
   bool nightOn = false, nightOff = false;
   int nightFrom = 23 * 60, nightTo = 7 * 60, nightLevel = 40;
   String city, playlist;      // playlist: comma-separated project ids
@@ -150,6 +152,7 @@ static String apName, apOptions, apFail, apFailHtml;
 static volatile uint8_t wifiReason = 0;           // why the station was last dropped (0 = not yet)
 static volatile bool wifiHeal = false;            // a connection attempt just ended: bring the display back in step
 static bool wifiDown = false, apAlt = false;
+static bool wifiLowTxOnBoot = true;
 static uint32_t wifiKickAt = 0, wifiDownAt = 0, wifiKicks = 0, apScreenAt = 0;
 static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinitCount = 0, lastFullFrame = 0;
 static float renderMsAvg = 0;  // average render + transfer time per frame
@@ -250,6 +253,7 @@ void loadSettings() {
   prefs.begin("vfd", true);
   cfg.ssid = prefs.getString("ssid", "");
   cfg.pass = prefs.getString("pass", "");
+  cfg.wifiLowTx = prefs.getBool("wifiLowTx", true);
   cfg.name = prefs.getString("name", "vfd");
   cfg.tz = prefs.getString("tz", cfg.tz);
   cfg.nightOn = prefs.getBool("nOn", false);
@@ -273,6 +277,7 @@ void saveSettings() {
   prefs.begin("vfd", false);
   prefs.putString("ssid", cfg.ssid);
   prefs.putString("pass", cfg.pass);
+  prefs.putBool("wifiLowTx", cfg.wifiLowTx);
   prefs.putString("name", cfg.name);
   prefs.putString("tz", cfg.tz);
   prefs.putBool("nOn", cfg.nightOn);
@@ -1067,6 +1072,9 @@ void setupApi() {
   server.on("/api/settings", HTTP_GET, []() { if (!guard(false)) return;
     JsonDocument d;
     d["name"] = cfg.name; d["tz"] = cfg.tz; d["ssid"] = cfg.ssid;
+    d["wifiLowTx"] = cfg.wifiLowTx; d["bluetoothOn"] = btStarted();
+    int8_t power;
+    if (esp_wifi_get_max_tx_power(&power) == ESP_OK) d["wifiTxDbm"] = power / 4.0;
     d["nightOn"] = cfg.nightOn; d["nightFrom"] = cfg.nightFrom; d["nightTo"] = cfg.nightTo;
     d["nightMode"] = cfg.nightOff ? "off" : "dim"; d["nightLevel"] = cfg.nightLevel;
     d["city"] = cfg.city; if (cfg.hasLoc) { d["lat"] = cfg.lat; d["lon"] = cfg.lon; }
@@ -1080,6 +1088,7 @@ void setupApi() {
     JsonDocument d; if (!bodyJson(d)) return;
     String name = d["name"] | cfg.name.c_str();
     if (validId(name)) { name.toLowerCase(); cfg.name = name; }
+    cfg.wifiLowTx = d["wifiLowTx"] | cfg.wifiLowTx;
     String tz = d["tz"] | cfg.tz.c_str();
     if (tz.length() && tz != cfg.tz) { cfg.tz = tz; setenv("TZ", cfg.tz.c_str(), 1); tzset(); }
     cfg.nightOn = d["nightOn"] | cfg.nightOn;
@@ -1204,6 +1213,7 @@ void setupPortal() {
     h.replace("%OPTIONS%", apOptions);
     h.replace("%ERR%", apFailHtml);
     h.replace("%NAME%", cfg.name);
+    h.replace("%LOW_TX_SELECTED%", cfg.wifiLowTx ? "selected" : "");
     server.send(200, "text/html", h);
   };
   server.on("/", HTTP_GET, page);
@@ -1212,6 +1222,8 @@ void setupPortal() {
     if (!ssid.length()) ssid = server.arg("ssid_sel");
     if (!ssid.length()) { server.sendHeader("Location", "/"); server.send(302); return; }
     cfg.ssid = ssid; cfg.pass = server.arg("pass");
+    String tx = server.arg("wifi_tx");
+    if (tx == "8.5" || tx == "default") cfg.wifiLowTx = tx == "8.5";
     String name = server.arg("name"); name.toLowerCase();
     if (validId(name)) cfg.name = name;
     saveSettings();
@@ -1228,6 +1240,17 @@ void setupPortal() {
 }
 
 /* ---------------- Wi-Fi ---------------- */
+void applyWifiTxLimit() {
+  if (!wifiLowTxOnBoot) return;
+
+  int8_t power;
+  if (esp_wifi_get_max_tx_power(&power) == ESP_OK && power <= WIFI_POWER_8_5dBm) return;
+  // WiFi.mode() starts the driver synchronously. The Arduino wrapper relies on the later interface-start event.
+  esp_err_t result = esp_wifi_set_max_tx_power(WIFI_POWER_8_5dBm);
+  if (result == ESP_OK) logf("wifi: TX limit 8.5 dBm");
+  else logf("wifi: failed to set TX limit (%s)", esp_err_to_name(result));
+}
+
 String htmlEscape(const String& s) {
   String o; for (char c : s) { if (c == '<') o += "&lt;"; else if (c == '>') o += "&gt;"; else if (c == '&') o += "&amp;"; else if (c == '"') o += "&quot;"; else o += c; }
   return o;
@@ -1249,7 +1272,7 @@ void startAP() {
                  "). If you change nothing, it tries again by itself once no device is connected to this setup network (3 minutes after it opened at the earliest).</p>";
   }
   WiFi.disconnect(true);
-  WiFi.mode(WIFI_AP_STA);
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   statusScreen("WIFI SETUP", "SCANNING NETWORKS");
   int n = WiFi.scanNetworks();
   apOptions = "";
@@ -1265,7 +1288,8 @@ void startAP() {
   uint64_t mac = ESP.getEfuseMac();
   char suf[5]; snprintf(suf, sizeof suf, "%04X", (uint16_t)(mac >> 32));
   apName = String("VFD-SETUP-") + suf;
-  WiFi.softAP(apName.c_str());
+  if (WiFi.softAP(apName.c_str())) applyWifiTxLimit();
+  else logf("setup network: failed to start %s", apName.c_str());
   dns.start(53, "*", WiFi.softAPIP());
   apMode = true; apSince = millis();
   setupPortal();
@@ -1275,7 +1299,7 @@ void startAP() {
 
 static uint32_t wifiStart = 0;
 void wifiBegin() {
-  WiFi.mode(WIFI_STA);
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   WiFi.setHostname(cfg.name.c_str());
   WiFi.setAutoReconnect(true);
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
@@ -1285,6 +1309,7 @@ void wifiKick() {  // drop whatever the driver is doing and connect from scratch
   wifiKicks++;
   if (wifiKicks <= 3 || wifiKicks % 10 == 0) logf("wifi: attempt %lu (%s)", (unsigned long)wifiKicks, wifiReason ? wifiReasonText().c_str() : "no reason yet");
   WiFi.disconnect();
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
 }
 bool connectWifi() {
@@ -1297,6 +1322,7 @@ bool connectWifi() {
     delay(30);
   }
   if (WiFi.status() != WL_CONNECTED) return false;
+  applyWifiTxLimit();
   WiFi.setSleep(false);
   return true;
 }
@@ -1308,11 +1334,12 @@ void wifiWatch() {
   uint32_t now = millis();
   static uint8_t loggedReason = 0;
   if (wifiReason != loggedReason) { loggedReason = wifiReason; logf("wifi: dropped, reason %s", wifiReasonText().c_str()); }
-  if (wifiHeal) { wifiHeal = false; displayHeal(); lastDisplayHeal = now; }
+  if (wifiHeal) { wifiHeal = false; applyWifiTxLimit(); displayHeal(); lastDisplayHeal = now; }
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiDown) {
       wifiDown = false; logf("wifi: back after %lu s, rssi %d", (unsigned long)((now - wifiDownAt) / 1000), (int)WiFi.RSSI());
       displayHeal(); lastDisplayHeal = now;   // the radio was busy: make sure the display is in step again
+      applyWifiTxLimit();
       WiFi.setAutoReconnect(true);
       WiFi.setSleep(false);            // also covers a start without network
       if (wxFails > 1) wxFails = 1;    // fetch the weather soon instead of waiting out a long pause
@@ -1375,6 +1402,7 @@ void setup() {
   wxMutex = xSemaphoreCreateMutex();
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   loadSettings();
+  wifiLowTxOnBoot = cfg.wifiLowTx;
   // Arduino-ESP32 uses 11 dB ADC attenuation by default, with a calibrated range up to 3.1 V on the S3.
   updateAmbientLight();
   WiFi.onEvent(onWifiEvent);                     // records why a connection attempt failed

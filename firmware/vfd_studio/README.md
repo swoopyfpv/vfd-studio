@@ -1,4 +1,4 @@
-# VFD Studio firmware 2.5.5
+# VFD Studio firmware 2.5.6
 
 ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 
@@ -125,6 +125,9 @@ in the background meanwhile, then "CONNECTING TO WI-FI" if needed and the addres
 
 ## Wi-Fi
 
+- **Wi-Fi TX limit:** 8.5 dBm by default for router connections and the setup hotspot. Change it in **Device → Settings**
+  or on the Wi-Fi setup page. The saved choice takes effect after a reboot. Settings shows the current limit reported
+  by the driver and the Bluetooth radio status. VFD Studio starts with Bluetooth off.
 - **Boot:** up to 22 s to connect. If an attempt fails, the firmware starts it over every 8 s (the ESP32 core
   retries some failures by itself, but stops for good after others, e.g. `AUTH_FAIL` from a router that is still
   starting or still holds the display's old session).

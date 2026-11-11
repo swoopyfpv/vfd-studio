@@ -317,9 +317,14 @@ $('btnReboot').onclick=()=>modal('Reboot display','<p class="note">The display r
 $('btnSettings').onclick=async()=>{
   let s;try{s=await(await devFetch('/api/settings')).json();}catch(e){return toast('Could not load settings');}
   const supportsAutoBrightness=typeof s.autoBrightness==='boolean';
+  const supportsWifiTx=typeof s.wifiLowTx==='boolean';
+  const wifiTxSettings=supportsWifiTx?`
+    <label for="sWifiTx">Wi-Fi TX limit</label><div class="row"><select id="sWifiTx" aria-describedby="sWifiTxNote" style="width:auto"><option value="8.5">8.5 dBm</option><option value="default">ESP32 default</option></select>
+    <span class="note" id="sWifiTxNote">${Number.isFinite(s.wifiTxDbm)?`Current limit ${s.wifiTxDbm} dBm. `:''}Reboot to apply.</span></div>
+    <span class="note">Bluetooth</span><span>${s.bluetoothOn?'On':'Off'}</span>`:'';
   const hm=m=>p2(Math.floor(m/60))+':'+p2(m%60), mh=v=>{const[a,b]=(v||'0:0').split(':');return(+a)*60+(+b);};
   modal('Display settings',`<div class="fields">
-    <label>Name</label><input type="text" id="sName"><div class="note full">Address becomes http://NAME.local after a reboot.</div>
+    <label>Name</label><input type="text" id="sName"><div class="note full">Address becomes http://NAME.local after a reboot.</div>${wifiTxSettings}
     <label>Time zone</label><input type="text" id="sTz"><div class="note full">POSIX TZ string. Germany: CET-1CEST,M3.5.0,M10.5.0/3</div>
     <label>Location</label><div class="row"><input type="text" id="sCity" placeholder="City" style="flex:1"><button class="btn sm" id="sFind">Search</button></div>
     <div class="full" id="sHits"></div>
@@ -339,11 +344,13 @@ $('btnSettings').onclick=async()=>{
       city:$('sCity').value.trim(),...($('sLat').value===''||$('sLon').value===''?{noLoc:true}:{lat:+$('sLat').value,lon:+$('sLon').value}),playSec:Math.max(5,+$('sPlay').value||30),
       ...(s.maxBright!=null?{maxBright:Math.min(1023,Math.max(20,+$('sMaxBr').value||300))}:{}),
       ...(supportsAutoBrightness?{autoBrightness:$('sAutoBrightness').checked}:{}),
+      ...(supportsWifiTx?{wifiLowTx:$('sWifiTx').value==='8.5'}:{}),
       ...(s.reinitMin!=null?{reinitMin:Math.min(1440,Math.max(0,parseInt($('sReMin').value)||0))}:{})})
       .then(()=>{toast('Settings saved');setTimeout(wxRefresh,4000);},e=>toast('Save failed: '+e.message));}]]);
   $('sName').value=s.name;$('sTz').value=s.tz;$('sNight').checked=s.nightOn;$('sFrom').value=hm(s.nightFrom);$('sTo').value=hm(s.nightTo);$('sMode').value=s.nightMode;$('sLvl').value=s.nightLevel;
   $('sCity').value=s.city||'';$('sLat').value=s.lat??'';$('sLon').value=s.lon??'';$('sPlay').value=s.playSec||30;$('sMaxBr').value=s.maxBright??300;$('sMaxBr').disabled=s.maxBright==null;$('sReMin').value=s.reinitMin??'';$('sReMin').disabled=s.reinitMin==null;
   $('sAutoBrightness').checked=s.autoBrightness===true;
+  if(supportsWifiTx)$('sWifiTx').value=s.wifiLowTx?'8.5':'default';
   $('sFind').onclick=()=>geoSearch($('sCity').value,$('sHits'),h=>{$('sCity').value=h.name;$('sLat').value=h.latitude.toFixed(4);$('sLon').value=h.longitude.toFixed(4);});
 };
 $('btnFw').onclick=()=>{
