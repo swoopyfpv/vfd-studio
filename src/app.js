@@ -253,8 +253,9 @@ $('btnWiring').onclick=()=>modal('Wiring · ESP32-S3 Super Mini → GP1294AI',`
 <tr><td>CS</td><td>GPIO 6</td><td></td></tr>
 <tr><td>RESET</td><td>GPIO 7</td><td></td></tr>
 <tr><td>FILAMENT_EN</td><td>GPIO 8</td><td>Direct wire, no resistor</td></tr>
+<tr><td>LII_SW (pin 11)</td><td>GPIO 1</td><td>Optional light sensor. Connect a 47 kΩ resistor from GPIO 1 to 3.3 V.</td></tr>
 </table>
-<p class="note" style="margin-top:12px">All five signal pins are in the board's "free to use" group: no boot pins, no USB, no JTAG. The onboard RGB LED (GPIO 48) can show Wi-Fi status.</p>
+<p class="note" style="margin-top:12px">All five display control pins are in the board's "free to use" group: no boot pins, no USB, no JTAG. The onboard RGB LED (GPIO 48) can show Wi-Fi status.</p>
 <p class="note"><b>First flash:</b> hold BOOT while plugging in USB-C, flash, then press RESET. After that, updates go over Wi-Fi.</p>`,[['Close']]);
 
 /* ============================================================
@@ -315,6 +316,7 @@ $('btnMsg').onclick=()=>{const t=$('msgText').value.trim();if(!t)return;jpost('/
 $('btnReboot').onclick=()=>modal('Reboot display','<p class="note">The display restarts and is back online in about 10 seconds.</p>',[['Cancel'],['Reboot','hot',()=>{jpost('/api/reboot',{}).catch(()=>{});toast('Rebooting…');setTimeout(connect,12000);}]]);
 $('btnSettings').onclick=async()=>{
   let s;try{s=await(await devFetch('/api/settings')).json();}catch(e){return toast('Could not load settings');}
+  const supportsAutoBrightness=typeof s.autoBrightness==='boolean';
   const hm=m=>p2(Math.floor(m/60))+':'+p2(m%60), mh=v=>{const[a,b]=(v||'0:0').split(':');return(+a)*60+(+b);};
   modal('Display settings',`<div class="fields">
     <label>Name</label><input type="text" id="sName"><div class="note full">Address becomes http://NAME.local after a reboot.</div>
@@ -324,6 +326,7 @@ $('btnSettings').onclick=async()=>{
     <label>Lat / Lon</label><div class="row"><input type="number" step="0.0001" id="sLat" style="width:48%"><input type="number" step="0.0001" id="sLon" style="width:48%"></div>
     <label>Rotation</label><div class="row"><input type="number" id="sPlay" min="5" style="width:80px"> <span class="note">seconds per project (tick projects in the list)</span></div>
     <label>Brightness limit</label><div class="row"><input type="number" id="sMaxBr" min="20" max="1023" style="width:80px"> <span class="note">tube level at 100 % (0–1023). Datasheet: below 300 delays aging.</span></div>
+    <span class="note">Auto brightness</span><label class="ck"><input type="checkbox" id="sAutoBrightness" aria-label="Auto brightness" aria-describedby="sAutoBrightnessNote" ${supportsAutoBrightness?'':'disabled'}> <span id="sAutoBrightnessNote">${supportsAutoBrightness?'Dim the display in darker rooms':'Requires a firmware update'}</span></label>
     <label>Display refresh</label><div class="row"><input type="number" id="sReMin" min="0" max="1440" style="width:80px"> <span class="note">re-initialise the display every … minutes (short blink; fixes a frozen image). 0 = off</span></div>
     <label>Night mode</label><label class="ck"><input type="checkbox" id="sNight">enabled</label>
     <label>From</label><input type="time" id="sFrom">
@@ -333,10 +336,14 @@ $('btnSettings').onclick=async()=>{
   </div><div class="hr"></div><p class="note">Forget Wi-Fi restarts the display in setup mode (network VFD-SETUP-…). Holding the BOOT button for 5 seconds does the same.</p>`,
   [['Forget Wi-Fi','hot',()=>{jpost('/api/wifi/forget',{}).catch(()=>{});toast('Restarting in setup mode');}],['Cancel'],['Save','pri',()=>{
     jpost('/api/settings',{name:$('sName').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'')||'vfd',tz:$('sTz').value.trim(),nightOn:$('sNight').checked,nightFrom:mh($('sFrom').value),nightTo:mh($('sTo').value),nightMode:$('sMode').value,nightLevel:+$('sLvl').value,
-      city:$('sCity').value.trim(),...($('sLat').value===''||$('sLon').value===''?{noLoc:true}:{lat:+$('sLat').value,lon:+$('sLon').value}),playSec:Math.max(5,+$('sPlay').value||30),...(s.maxBright!=null?{maxBright:Math.min(1023,Math.max(20,+$('sMaxBr').value||300))}:{}),...(s.reinitMin!=null?{reinitMin:Math.min(1440,Math.max(0,parseInt($('sReMin').value)||0))}:{})})
+      city:$('sCity').value.trim(),...($('sLat').value===''||$('sLon').value===''?{noLoc:true}:{lat:+$('sLat').value,lon:+$('sLon').value}),playSec:Math.max(5,+$('sPlay').value||30),
+      ...(s.maxBright!=null?{maxBright:Math.min(1023,Math.max(20,+$('sMaxBr').value||300))}:{}),
+      ...(supportsAutoBrightness?{autoBrightness:$('sAutoBrightness').checked}:{}),
+      ...(s.reinitMin!=null?{reinitMin:Math.min(1440,Math.max(0,parseInt($('sReMin').value)||0))}:{})})
       .then(()=>{toast('Settings saved');setTimeout(wxRefresh,4000);},e=>toast('Save failed: '+e.message));}]]);
   $('sName').value=s.name;$('sTz').value=s.tz;$('sNight').checked=s.nightOn;$('sFrom').value=hm(s.nightFrom);$('sTo').value=hm(s.nightTo);$('sMode').value=s.nightMode;$('sLvl').value=s.nightLevel;
   $('sCity').value=s.city||'';$('sLat').value=s.lat??'';$('sLon').value=s.lon??'';$('sPlay').value=s.playSec||30;$('sMaxBr').value=s.maxBright??300;$('sMaxBr').disabled=s.maxBright==null;$('sReMin').value=s.reinitMin??'';$('sReMin').disabled=s.reinitMin==null;
+  $('sAutoBrightness').checked=s.autoBrightness===true;
   $('sFind').onclick=()=>geoSearch($('sCity').value,$('sHits'),h=>{$('sCity').value=h.name;$('sLat').value=h.latitude.toFixed(4);$('sLon').value=h.longitude.toFixed(4);});
 };
 $('btnFw').onclick=()=>{
@@ -576,6 +583,7 @@ async function sysRefresh(){
       sysCard('RAM',`${kb(d.heapTotal-d.heapFree)} / ${kb(d.heapTotal)} · min free ${kb(d.heapMin)}`,(d.heapTotal-d.heapFree)*100/d.heapTotal)+
       (d.psramTotal?sysCard('PSRAM',`${kb(d.psramTotal-d.psramFree)} / ${kb(d.psramTotal)}`,(d.psramTotal-d.psramFree)*100/d.psramTotal):'')+
       sysCard('CPU (render)',`${fnum(d.load,0)} % · ${d.renderMs.toFixed(1)} ms/frame · ${d.cpuMHz} MHz`,d.load)+
+      (Number.isFinite(d.lightPercent)&&Number.isFinite(d.lightMv)?sysCard('Ambient light',`${d.lightPercent} % · ${d.lightMv} mV`):'')+
       sysCard('Chip temperature',`${fnum(d.temp,1)} °C`,null)+
       sysCard('Wi-Fi',`${d.ssid} · ${d.rssi} dBm`,Math.max(0,Math.min(100,(d.rssi+95)*100/60)))+
       sysCard('Uptime',fUp(d.uptime)+` · fw ${d.fw}`+(d.reinits!=null?` · display re-inits ${d.reinits}${d.reinitMin?' (every '+d.reinitMin+' min)':''}`:''),null);
