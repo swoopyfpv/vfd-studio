@@ -9,6 +9,7 @@ typedef struct { arduino_event_id_t event_id; arduino_event_info_t event_info; }
 typedef void (*NetworkEventSysCb)(arduino_event_t*);
 struct STAClass { const char* disconnectReasonName(wifi_err_reason_t); };
 typedef enum { WIFI_MODE_NULL, WIFI_STA, WIFI_AP, WIFI_AP_STA } wifi_mode_t;
+typedef enum { WIFI_POWER_8_5dBm = 34 } wifi_power_t;
 struct WiFiClass { bool mode(wifi_mode_t); bool setHostname(const char*); bool setAutoReconnect(bool); wl_status_t begin(const char*,const char* =NULL,int32_t=0,const uint8_t* =NULL,bool=true);
   wl_status_t status(); bool setSleep(bool); bool disconnect(bool=false,bool=false); int16_t scanNetworks(bool=false,bool=false,bool=false,uint32_t=300,uint8_t=0,const char* =nullptr,const uint8_t* =nullptr);
   String SSID(uint8_t); String SSID() const; int32_t RSSI(uint8_t); int8_t RSSI(); void scanDelete(); bool softAP(const char*,const char* =NULL,int=1,int=0,int=4,bool=false);

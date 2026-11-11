@@ -6,11 +6,12 @@
 //    Board ............ ESP32S3 Dev Module
 //    USB CDC On Boot .. Enabled
 //    Flash Size ....... 4MB (32Mb)
-//    Partition Scheme . (ignored: partitions.csv in this folder is used — 2× 1.5 MB app + 896 KB storage)
+//    Partition Scheme . Custom (partitions.csv: 2× 1.5 MB app + 896 KB storage)
 //    PSRAM ............ QSPI PSRAM
 //  Libraries (Library Manager): U8g2 (2.37+), ArduinoJson (7.x)
 //
 //  Wiring: CLK 4 · DATA 5 · CS 6 · RESET 7 · FILAMENT_EN 8 (direct, no resistor)
+//  Optional light sensor: LII_SW to GPIO 1, with 47 kΩ from GPIO 1 to 3.3 V.
 // ============================================================
 #include <Arduino.h>
 #include <SPI.h>
@@ -29,8 +30,10 @@
 #include <sys/time.h>
 #include <time.h>
 #include <algorithm>
+#include <cmath>
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 
 #include "project.h"
 #include "demos.h"
@@ -38,7 +41,7 @@
 #include "studio.h"
 #include "setup_page.h"
 
-#define FW_VERSION "2.5.4"
+#define FW_VERSION "2.5.6"
 #define DEMO_VERSION 4
 
 // Last weather, kept in RTC memory across restarts (see "weather kept across restarts"). Defined up here because
@@ -59,6 +62,7 @@ struct WxKeep {
 #define VFD_SPI 0
 
 static const int PIN_CLK = 4, PIN_DATA = 5, PIN_CS = 6, PIN_RST = 7, PIN_FIL = 8, PIN_BOOT = 0;
+static const int PIN_LIGHT = 1;
 
 #if VFD_SPI == 1
 U8G2_GP1294AI_256X48_F_4W_HW_SPI u8g2(U8G2_R0, /*cs=*/PIN_CS, /*dc=*/U8X8_PIN_NONE, /*reset=*/PIN_RST);
@@ -113,6 +117,7 @@ Preferences prefs;
 
 struct Settings {
   String ssid, pass, name = "vfd", tz = "CET-1CEST,M3.5.0,M10.5.0/3";
+  bool wifiLowTx = true;
   bool nightOn = false, nightOff = false;
   int nightFrom = 23 * 60, nightTo = 7 * 60, nightLevel = 40;
   String city, playlist;      // playlist: comma-separated project ids
@@ -120,6 +125,7 @@ struct Settings {
   double lat = 0, lon = 0;
   int playSec = 30;
   int maxBright = 300;        // dimming value at full brightness (0-1023). Datasheet: below 300 delays aging.
+  bool autoBrightness = false;
   int reinitMin = 5;          // re-initialise the display controller every N minutes (0 = off)
 } cfg;
 
@@ -136,6 +142,7 @@ static vfd::Project proj;
 static String activeId = "neon-clock";
 static bool reloadPending = false, apMode = false, filOn = false, liveOn = false, msgOn = false;  // explicit flags: timers alone wrap after ~24.8 days
 static int brightOverride = -1, lastContrast = -1, lastBright = 200;
+static int lightMv = -1, lightPercent = 0;
 static uint8_t liveBuf[1536];
 static uint8_t lastSent[256 * 6];
 static bool forceSend = true, reinitDone = false;
@@ -145,6 +152,7 @@ static String apName, apOptions, apFail, apFailHtml;
 static volatile uint8_t wifiReason = 0;           // why the station was last dropped (0 = not yet)
 static volatile bool wifiHeal = false;            // a connection attempt just ended: bring the display back in step
 static bool wifiDown = false, apAlt = false;
+static bool wifiLowTxOnBoot = true;
 static uint32_t wifiKickAt = 0, wifiDownAt = 0, wifiKicks = 0, apScreenAt = 0;
 static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinitCount = 0, lastFullFrame = 0;
 static float renderMsAvg = 0;  // average render + transfer time per frame
@@ -245,6 +253,7 @@ void loadSettings() {
   prefs.begin("vfd", true);
   cfg.ssid = prefs.getString("ssid", "");
   cfg.pass = prefs.getString("pass", "");
+  cfg.wifiLowTx = prefs.getBool("wifiLowTx", true);
   cfg.name = prefs.getString("name", "vfd");
   cfg.tz = prefs.getString("tz", cfg.tz);
   cfg.nightOn = prefs.getBool("nOn", false);
@@ -260,6 +269,7 @@ void loadSettings() {
   cfg.playlist = prefs.getString("play", "");
   cfg.playSec = prefs.getInt("playSec", 30);
   cfg.maxBright = prefs.getInt("maxBr", 300);
+  cfg.autoBrightness = prefs.getBool("autoBright", false);
   cfg.reinitMin = prefs.getInt("reMin", 5);
   prefs.end();
 }
@@ -267,6 +277,7 @@ void saveSettings() {
   prefs.begin("vfd", false);
   prefs.putString("ssid", cfg.ssid);
   prefs.putString("pass", cfg.pass);
+  prefs.putBool("wifiLowTx", cfg.wifiLowTx);
   prefs.putString("name", cfg.name);
   prefs.putString("tz", cfg.tz);
   prefs.putBool("nOn", cfg.nightOn);
@@ -282,8 +293,29 @@ void saveSettings() {
   prefs.putString("play", cfg.playlist);
   prefs.putInt("playSec", cfg.playSec);
   prefs.putInt("maxBr", cfg.maxBright);
+  prefs.putBool("autoBright", cfg.autoBrightness);
   prefs.putInt("reMin", cfg.reinitMin);
   prefs.end();
+}
+
+/* ---------------- ambient light ---------------- */
+void updateAmbientLight() {
+  static uint32_t lastSample = 0;
+  const uint32_t now = millis();
+  if (lightMv >= 0 && now - lastSample < 250) return;
+  lastSample = now;
+
+  constexpr int samples = 8;
+  uint32_t sum = 0;
+  for (int i = 0; i < samples; i++) sum += analogReadMilliVolts(PIN_LIGHT);
+  const int mv = (sum + samples / 2) / samples;
+  lightMv = lightMv < 0 ? mv : (3 * lightMv + mv + 2) / 4;
+
+  // The photocell pulls the voltage down as light increases. A logarithmic scale spreads out lower voltages.
+  constexpr int brightMv = 100, darkMv = 2800;
+  static const float logRange = std::log(float(darkMv) / brightMv);
+  const float clampedMv = constrain(lightMv, brightMv, darkMv);
+  lightPercent = std::lround(100.0f * std::log(darkMv / clampedMv) / logRange);
 }
 
 /* ---------------- display output ---------------- */
@@ -306,6 +338,11 @@ void setContrast(int c) {
   c = constrain(c, 0, 255);
   lastBright = c;
   int raw = (c * constrain(cfg.maxBright, 1, 1023) + 127) / 255;
+  if (cfg.autoBrightness && lightMv >= 0) {
+    // Keep 25% of the requested brightness at the dark end of the range.
+    const int scale = 25 + (75 * lightPercent + 50) / 100;
+    raw = (raw * scale + 50) / 100;
+  }
   if (raw == lastContrast) return;
   lastContrast = raw;
   const uint8_t a[2] = { (uint8_t)(raw & 0xFF), (uint8_t)(raw >> 8) };
@@ -894,6 +931,7 @@ void setupApi() {
     JsonDocument d;
     d["fw"] = FW_VERSION; d["chip"] = ESP.getChipModel(); d["cpuMHz"] = ESP.getCpuFreqMHz(); d["reinits"] = reinitCount; d["reinitMin"] = cfg.reinitMin;
     d["load"] = vfd::SYS.cpu; d["renderMs"] = renderMsAvg; d["temp"] = vfd::SYS.temp;
+    if (lightMv >= 0) { d["lightPercent"] = lightPercent; d["lightMv"] = lightMv; }
     d["heapTotal"] = ESP.getHeapSize(); d["heapFree"] = ESP.getFreeHeap(); d["heapMin"] = ESP.getMinFreeHeap();
     d["psramTotal"] = ESP.getPsramSize(); d["psramFree"] = ESP.getFreePsram();
     d["fsTotal"] = LittleFS.totalBytes(); d["fsUsed"] = LittleFS.usedBytes();
@@ -1034,10 +1072,14 @@ void setupApi() {
   server.on("/api/settings", HTTP_GET, []() { if (!guard(false)) return;
     JsonDocument d;
     d["name"] = cfg.name; d["tz"] = cfg.tz; d["ssid"] = cfg.ssid;
+    d["wifiLowTx"] = cfg.wifiLowTx; d["bluetoothOn"] = btStarted();
+    int8_t power;
+    if (esp_wifi_get_max_tx_power(&power) == ESP_OK) d["wifiTxDbm"] = power / 4.0;
     d["nightOn"] = cfg.nightOn; d["nightFrom"] = cfg.nightFrom; d["nightTo"] = cfg.nightTo;
     d["nightMode"] = cfg.nightOff ? "off" : "dim"; d["nightLevel"] = cfg.nightLevel;
     d["city"] = cfg.city; if (cfg.hasLoc) { d["lat"] = cfg.lat; d["lon"] = cfg.lon; }
     d["playSec"] = cfg.playSec; d["maxBright"] = cfg.maxBright; d["reinitMin"] = cfg.reinitMin;
+    d["autoBrightness"] = cfg.autoBrightness;
     JsonArray pl = d["playlist"].to<JsonArray>(); for (const String& id : playlistIds()) pl.add(id);
     sendJson(200, d);
   });
@@ -1046,6 +1088,7 @@ void setupApi() {
     JsonDocument d; if (!bodyJson(d)) return;
     String name = d["name"] | cfg.name.c_str();
     if (validId(name)) { name.toLowerCase(); cfg.name = name; }
+    cfg.wifiLowTx = d["wifiLowTx"] | cfg.wifiLowTx;
     String tz = d["tz"] | cfg.tz.c_str();
     if (tz.length() && tz != cfg.tz) { cfg.tz = tz; setenv("TZ", cfg.tz.c_str(), 1); tzset(); }
     cfg.nightOn = d["nightOn"] | cfg.nightOn;
@@ -1060,6 +1103,7 @@ void setupApi() {
     } else if (d["noLoc"] | false) { cfg.hasLoc = false; }
     if (d["playSec"].is<int>()) cfg.playSec = constrain((int)d["playSec"], 5, 86400);
     if (d["maxBright"].is<int>()) { cfg.maxBright = constrain((int)d["maxBright"], 20, 1023); lastContrast = -1; }
+    cfg.autoBrightness = d["autoBrightness"] | cfg.autoBrightness;
     if (d["reinitMin"].is<int>()) cfg.reinitMin = constrain((int)d["reinitMin"], 0, 1440);
     if (d["playlist"].is<JsonArray>()) {
       String pl; for (JsonVariant v : d["playlist"].as<JsonArray>()) { String id = v | ""; if (validId(id)) { if (pl.length()) pl += ","; pl += id; } }
@@ -1169,6 +1213,7 @@ void setupPortal() {
     h.replace("%OPTIONS%", apOptions);
     h.replace("%ERR%", apFailHtml);
     h.replace("%NAME%", cfg.name);
+    h.replace("%LOW_TX_SELECTED%", cfg.wifiLowTx ? "selected" : "");
     server.send(200, "text/html", h);
   };
   server.on("/", HTTP_GET, page);
@@ -1177,6 +1222,8 @@ void setupPortal() {
     if (!ssid.length()) ssid = server.arg("ssid_sel");
     if (!ssid.length()) { server.sendHeader("Location", "/"); server.send(302); return; }
     cfg.ssid = ssid; cfg.pass = server.arg("pass");
+    String tx = server.arg("wifi_tx");
+    if (tx == "8.5" || tx == "default") cfg.wifiLowTx = tx == "8.5";
     String name = server.arg("name"); name.toLowerCase();
     if (validId(name)) cfg.name = name;
     saveSettings();
@@ -1193,6 +1240,17 @@ void setupPortal() {
 }
 
 /* ---------------- Wi-Fi ---------------- */
+void applyWifiTxLimit() {
+  if (!wifiLowTxOnBoot) return;
+
+  int8_t power;
+  if (esp_wifi_get_max_tx_power(&power) == ESP_OK && power <= WIFI_POWER_8_5dBm) return;
+  // WiFi.mode() starts the driver synchronously. The Arduino wrapper relies on the later interface-start event.
+  esp_err_t result = esp_wifi_set_max_tx_power(WIFI_POWER_8_5dBm);
+  if (result == ESP_OK) logf("wifi: TX limit 8.5 dBm");
+  else logf("wifi: failed to set TX limit (%s)", esp_err_to_name(result));
+}
+
 String htmlEscape(const String& s) {
   String o; for (char c : s) { if (c == '<') o += "&lt;"; else if (c == '>') o += "&gt;"; else if (c == '&') o += "&amp;"; else if (c == '"') o += "&quot;"; else o += c; }
   return o;
@@ -1214,7 +1272,7 @@ void startAP() {
                  "). If you change nothing, it tries again by itself once no device is connected to this setup network (3 minutes after it opened at the earliest).</p>";
   }
   WiFi.disconnect(true);
-  WiFi.mode(WIFI_AP_STA);
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   statusScreen("WIFI SETUP", "SCANNING NETWORKS");
   int n = WiFi.scanNetworks();
   apOptions = "";
@@ -1230,7 +1288,8 @@ void startAP() {
   uint64_t mac = ESP.getEfuseMac();
   char suf[5]; snprintf(suf, sizeof suf, "%04X", (uint16_t)(mac >> 32));
   apName = String("VFD-SETUP-") + suf;
-  WiFi.softAP(apName.c_str());
+  if (WiFi.softAP(apName.c_str())) applyWifiTxLimit();
+  else logf("setup network: failed to start %s", apName.c_str());
   dns.start(53, "*", WiFi.softAPIP());
   apMode = true; apSince = millis();
   setupPortal();
@@ -1240,7 +1299,7 @@ void startAP() {
 
 static uint32_t wifiStart = 0;
 void wifiBegin() {
-  WiFi.mode(WIFI_STA);
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   WiFi.setHostname(cfg.name.c_str());
   WiFi.setAutoReconnect(true);
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
@@ -1250,6 +1309,7 @@ void wifiKick() {  // drop whatever the driver is doing and connect from scratch
   wifiKicks++;
   if (wifiKicks <= 3 || wifiKicks % 10 == 0) logf("wifi: attempt %lu (%s)", (unsigned long)wifiKicks, wifiReason ? wifiReasonText().c_str() : "no reason yet");
   WiFi.disconnect();
+  if (WiFi.mode(WIFI_STA)) applyWifiTxLimit();
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
 }
 bool connectWifi() {
@@ -1262,6 +1322,7 @@ bool connectWifi() {
     delay(30);
   }
   if (WiFi.status() != WL_CONNECTED) return false;
+  applyWifiTxLimit();
   WiFi.setSleep(false);
   return true;
 }
@@ -1273,11 +1334,12 @@ void wifiWatch() {
   uint32_t now = millis();
   static uint8_t loggedReason = 0;
   if (wifiReason != loggedReason) { loggedReason = wifiReason; logf("wifi: dropped, reason %s", wifiReasonText().c_str()); }
-  if (wifiHeal) { wifiHeal = false; displayHeal(); lastDisplayHeal = now; }
+  if (wifiHeal) { wifiHeal = false; applyWifiTxLimit(); displayHeal(); lastDisplayHeal = now; }
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiDown) {
       wifiDown = false; logf("wifi: back after %lu s, rssi %d", (unsigned long)((now - wifiDownAt) / 1000), (int)WiFi.RSSI());
       displayHeal(); lastDisplayHeal = now;   // the radio was busy: make sure the display is in step again
+      applyWifiTxLimit();
       WiFi.setAutoReconnect(true);
       WiFi.setSleep(false);            // also covers a start without network
       if (wxFails > 1) wxFails = 1;    // fetch the weather soon instead of waiting out a long pause
@@ -1340,6 +1402,9 @@ void setup() {
   wxMutex = xSemaphoreCreateMutex();
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   loadSettings();
+  wifiLowTxOnBoot = cfg.wifiLowTx;
+  // Arduino-ESP32 uses 11 dB ADC attenuation by default, with a calibrated range up to 3.1 V on the S3.
+  updateAmbientLight();
   WiFi.onEvent(onWifiEvent);                     // records why a connection attempt failed
   if (cfg.ssid.length()) wifiBegin();           // connects in the background while the logo plays
   lastBright = 230; lastContrast = -1;           // logo at 230 of 255 (scaled by the brightness limit)
@@ -1412,7 +1477,9 @@ void loop() {
     if ((uint32_t)ms > statMaxDraw) statMaxDraw = (uint32_t)ms;
     if (ms > 250 && statSlow < 20) { statSlow++; logf("slow step 'draw+send': %lu ms", (unsigned long)ms); }
   } else { loopStage = ST_IDLE; delay(1); }
-  if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); loopStage = ST_SYS; updateSys(); }
+  loopStage = ST_SYS;
+  updateAmbientLight();
+  if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); updateSys(); }
   loopStage = ST_HEAL;
   if (!apMode && filOn && millis() - lastDisplayHeal >= 10000) { lastDisplayHeal = millis(); displayHeal(); }
   // Between heals only changed tiles are sent. If the controller misses one (bus or supply glitch, e.g. while the

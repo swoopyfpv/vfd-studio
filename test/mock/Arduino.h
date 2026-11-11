@@ -26,6 +26,8 @@ using std::min; using std::max;
 #define F(x) (x)
 typedef uint8_t byte;
 unsigned long millis(); void delay(uint32_t); void delayMicroseconds(uint32_t); void pinMode(uint8_t,uint8_t); void digitalWrite(uint8_t,uint8_t); int digitalRead(uint8_t);
+uint32_t analogReadMilliVolts(uint8_t);
+bool btStarted();
 class String {
   std::string s;
 public:

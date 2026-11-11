@@ -1,4 +1,4 @@
-# VFD Studio firmware 2.5.4
+# VFD Studio firmware 2.5.6
 
 ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 
@@ -12,6 +12,7 @@ ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 | CS          | GPIO 6                       |
 | RESET       | GPIO 7                       |
 | FILAMENT_EN | GPIO 8 (direct, no resistor) |
+| LII_SW (pin 11, optional) | GPIO 1 with a 47 kΩ resistor from GPIO 1 to 3.3 V |
 
 Power the **module** (USB-C or DC jack, 5 V ≥ 1 A; it draws up to ~680 mA). Its pin 8 "+5V OUT" is an output
 and feeds the ESP. Don't power the module from the ESP's 5V pin: the ESP's USB port and its diode can't
@@ -22,9 +23,9 @@ For a USB flash, unplug the module's own supply first, so two 5 V sources never 
 ## Flashing 2.1 (once over USB when coming from 1.x, because the flash layout changes)
 
 1. Library Manager: **U8g2** (2.37+) and **ArduinoJson** (7.x). Board package **esp32 by Espressif** 3.x.
-2. Tools: Board **ESP32S3 Dev Module**, USB CDC On Boot **Enabled**, Flash Size **4MB**, PSRAM **QSPI PSRAM**.
-   Partition Scheme: leave as it is — `partitions.csv` in this folder is used automatically
-   (2 × 1.5 MB app for updates over Wi-Fi, 896 KB for projects, fonts and studio updates).
+2. Tools: Board **ESP32S3 Dev Module**, USB CDC On Boot **Enabled**, Flash Size **4MB**, PSRAM **QSPI PSRAM**,
+   Partition Scheme **Custom**. The sketch's `partitions.csv` provides two 1.5 MB app slots for Wi-Fi updates
+   and 896 KB for projects, fonts and Studio updates.
 3. Upload, then press RESET.
 
 Wi-Fi settings survive this update. The project storage is rebuilt, and the demo projects are written again.
@@ -62,7 +63,7 @@ with easing `linear`, `in`, `out`, `inout` or `hold`.
 
 ## System
 
-Studio → Device shows storage, firmware slot, RAM, PSRAM, render load, chip temperature, Wi-Fi and uptime.
+Studio → Device shows storage, firmware slot, RAM, PSRAM, render load, ambient light, chip temperature, Wi-Fi and uptime.
 Tokens for any layer: `{CPU} {RAM} {FS} {TEMPC} {RSSI} {UPTIME} {IP}`; progress bars can use `cpu`, `ram`, `fs`.
 
 ## Display init (datasheet)
@@ -76,6 +77,11 @@ The fast SPI keeps ≥ 1200 ns between bytes (datasheet tDOFF ≥ 360 ns; 400 ns
 
 Studio → Device → Settings → Brightness limit (default 300 of 1023). Project brightness 0–255 is scaled to
 0…limit. The datasheet recommends staying below 300 to delay aging; raise it if you need more.
+
+**Auto brightness** is off by default. With the LII_SW circuit connected, enable it in the same settings to scale
+the requested brightness from 25% in the dark to 100% in bright light within the brightness limit and night settings.
+The Ambient light card updates even with auto brightness off. It shows a relative percentage (0% at 2800 mV or above,
+100% at 100 mV or below) and the filtered GPIO voltage. Both readings assume the sensor circuit is connected.
 
 ## Display self-healing
 
@@ -119,6 +125,9 @@ in the background meanwhile, then "CONNECTING TO WI-FI" if needed and the addres
 
 ## Wi-Fi
 
+- **Wi-Fi TX limit:** 8.5 dBm by default for router connections and the setup hotspot. Change it in **Device → Settings**
+  or on the Wi-Fi setup page. The saved choice takes effect after a reboot. Settings shows the current limit reported
+  by the driver and the Bluetooth radio status. VFD Studio starts with Bluetooth off.
 - **Boot:** up to 22 s to connect. If an attempt fails, the firmware starts it over every 8 s (the ESP32 core
   retries some failures by itself, but stops for good after others, e.g. `AUTH_FAIL` from a router that is still
   starting or still holds the display's old session).

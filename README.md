@@ -41,8 +41,8 @@ Projects are plain JSON. The browser preview and the display use the same render
 
 **VFD Studio**
 - Projects: select, rotate, send, delete; live mirror; text messages with duration
-- Settings: name, time zone, location, brightness limit, display refresh, night mode, rotation
-- System: storage, firmware slot, RAM, CPU, chip temperature, Wi-Fi, uptime, re-init count
+- Settings: name, Wi-Fi TX limit, Bluetooth status, time zone, location, brightness limit, auto brightness (off by default), display refresh, night mode, rotation
+- System: storage, firmware slot, RAM, CPU, ambient light, chip temperature, Wi-Fi, uptime, re-init count
 - Image / GIF / U8g2 code import, XBM export, Builder install, firmware update
 
 **VFD Studio Builder**
@@ -78,6 +78,7 @@ Arduino IDE → Sketch → Export Compiled Binary, then Studio → Device → Fi
 | CS | GPIO 6 |
 | RESET | GPIO 7 |
 | FILAMENT_EN | GPIO 8 (direct, no resistor) |
+| LII_SW (pin 11, optional) | GPIO 1 with a 47 kΩ resistor from GPIO 1 to 3.3 V |
 
 Power the module through its USB-C or DC jack (5 V, at least 1 A).
 
@@ -89,7 +90,7 @@ Requirements: Node.js; Arduino IDE with ESP32 core 3.x, U8g2 and ArduinoJson 7.
 ./build.sh
 ```
 
-This writes `dist/vfd-studio.html`, `dist/vfd-builder.html` and the generated headers `fonts.h`, `demos.h` and `studio.h` in `firmware/vfd_studio`. Then open `firmware/vfd_studio/vfd_studio.ino` in Arduino IDE (board: ESP32S3 Dev Module, USB CDC On Boot enabled; the sketch's `partitions.csv` is used automatically) and upload. After the first USB flash, updates run over Wi-Fi. Details in [firmware/vfd_studio/README.md](firmware/vfd_studio/README.md).
+This writes `dist/vfd-studio.html`, `dist/vfd-builder.html` and the generated headers `fonts.h`, `demos.h` and `studio.h` in `firmware/vfd_studio`. Then open `firmware/vfd_studio/vfd_studio.ino` in Arduino IDE, select **ESP32S3 Dev Module**, enable USB CDC On Boot, and set Partition Scheme to **Custom**. The build uses the sketch's `partitions.csv`. After the first USB flash, updates run over Wi-Fi. Details in [firmware/vfd_studio/README.md](firmware/vfd_studio/README.md).
 
 Install the Builder from the Studio: Device → Install Builder → `dist/vfd-builder.html`.
 
