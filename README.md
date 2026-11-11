@@ -36,6 +36,7 @@ Projects are plain JSON. The browser preview and the display use the same render
 - Boot logo animation, Wi-Fi setup portal (`VFD-SETUP-…`), mDNS name, web and Arduino OTA updates with rollback
 - Project playlist, Open-Meteo weather (no API key), NTP time with time zone, shared font library
 - Offline: time and last weather stay on the display, with a small no-Wi-Fi mark; reconnects by itself
+- Event log on the device (`/api/log`): starts, Wi-Fi, weather, project switches, a status line every 5 minutes, and a watcher that records where the main loop hangs
 - Request checks: answers only to its own name or IP, and changes need the header `X-VFD: 1` (see below)
 
 **VFD Studio**

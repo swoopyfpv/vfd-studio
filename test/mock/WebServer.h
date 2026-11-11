@@ -12,5 +12,6 @@ class WebServer { public: typedef std::function<void(void)> THandlerFunction; We
   void onNotFound(THandlerFunction fn); HTTPUpload &upload(); String hostHeader(); bool hasHeader(const String &name) const; void collectHeaders(const char *headerKeys[], const size_t headerKeysCount); String arg(const String &name) const; bool hasArg(const String &name) const;
   void send(int code, const char *content_type = NULL, const String &content = String(""));
   void send_P(int code, PGM_P content_type, PGM_P content, size_t contentLength);
+  void setContentLength(size_t); void sendContent(const char*, size_t);
   void sendHeader(const String &name, const String &value, bool first = false);
   template<typename T> size_t streamFile(T &file, const String &contentType, const int code = 200){ (void)file.size(); return 0; } };

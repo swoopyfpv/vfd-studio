@@ -11,6 +11,9 @@
 using std::min; using std::max;
 #define RTC_NOINIT_ATTR
 #include <cstddef>
+#include <cstdarg>
+#include <ctime>
+#include <sys/time.h>
 #define HIGH 1
 #define LOW 0
 #define OUTPUT 3

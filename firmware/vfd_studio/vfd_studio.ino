@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <U8g2lib.h>
+#include <stdarg.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
@@ -37,7 +38,7 @@
 #include "studio.h"
 #include "setup_page.h"
 
-#define FW_VERSION "2.5.3"
+#define FW_VERSION "2.5.4"
 #define DEMO_VERSION 4
 
 // Last weather, kept in RTC memory across restarts (see "weather kept across restarts"). Defined up here because
@@ -149,6 +150,96 @@ static uint32_t lastDisplayHeal = 0, lastSysUpdate = 0, lastSoftInit = 0, reinit
 static float renderMsAvg = 0;  // average render + transfer time per frame
 static int64_t lastFrameNo = -1;
 
+/* ---------------- event log ---------------- */
+// For tracking down freezes. Lines go into a small buffer; a background task writes them to /log.txt once a second,
+// so the log keeps working while the main loop is stuck, and it survives restarts and power cuts. At 96 KB the
+// file becomes /log.old (one generation is kept). Read: GET /api/log. Clear: DELETE /api/log.
+// The same task watches the main loop: if it stops for 5 s, the log says in which step. Every 5 minutes it writes
+// a status line (hb) with the numbers that tell a stuck firmware from a display that no longer takes data.
+enum { ST_IDLE, ST_WEB, ST_OTA, ST_WIFI, ST_BUTTON, ST_PROJECT, ST_REINIT, ST_DRAW_WAIT, ST_DRAW, ST_SEND, ST_SYS, ST_HEAL, ST_SETUP };
+static const char* const ST_NAME[] = { "idle", "web", "ota", "wifi", "button", "project", "reinit", "draw-wait", "draw", "send", "sys", "heal", "setup" };
+static volatile uint8_t loopStage = ST_SETUP;
+static volatile uint32_t loopCount = 0, statFrames = 0, statFull = 0, statTiles = 0, statMaxGap = 0, statMaxDraw = 0, statSlow = 0;
+static SemaphoreHandle_t logMutex = nullptr, logFileMutex = nullptr;
+static char logBuf[3072];
+static size_t logLen = 0;
+static uint32_t logLost = 0;
+
+void logf(const char* fmt, ...) {
+  char line[220];
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  time_t sec = tv.tv_sec; struct tm tm; localtime_r(&sec, &tm);
+  int n = tm.tm_year + 1900 >= 2024 ? (int)strftime(line, sizeof line, "%m-%d %H:%M:%S", &tm) : snprintf(line, sizeof line, "---- no time --");
+  n += snprintf(line + n, sizeof line - n, " %7lus  ", (unsigned long)(esp_timer_get_time() / 1000000));
+  va_list ap; va_start(ap, fmt); n += vsnprintf(line + n, sizeof line - n, fmt, ap); va_end(ap);
+  if (n > (int)sizeof line - 2) n = sizeof line - 2;
+  line[n++] = '\n'; line[n] = 0;
+  Serial.print(line);
+  if (logMutex) xSemaphoreTake(logMutex, portMAX_DELAY);
+  if (logLen + n <= sizeof logBuf) { memcpy(logBuf + logLen, line, n); logLen += n; } else logLost++;
+  if (logMutex) xSemaphoreGive(logMutex);
+}
+// buffer -> flash
+void logFlush() {
+  static char out[sizeof logBuf];
+  if (!logMutex || !logFileMutex) return;
+  xSemaphoreTake(logFileMutex, portMAX_DELAY);
+  xSemaphoreTake(logMutex, portMAX_DELAY);
+  size_t n = logLen; memcpy(out, logBuf, n); logLen = 0;
+  uint32_t lost = logLost; logLost = 0;
+  xSemaphoreGive(logMutex);
+  if (n) {
+    File f = LittleFS.open("/log.txt", "a");
+    if (f) {
+      f.write((const uint8_t*)out, n);
+      if (lost) { char b[48]; int m = snprintf(b, sizeof b, "(%lu lines lost, buffer full)\n", (unsigned long)lost); f.write((const uint8_t*)b, m); }
+      f.close();
+      File r = LittleFS.open("/log.txt", "r");
+      size_t sz = r ? r.size() : 0;
+      if (r) r.close();
+      if (sz > 96 * 1024) { LittleFS.remove("/log.old"); LittleFS.rename("/log.txt", "/log.old"); }
+    }
+  }
+  xSemaphoreGive(logFileMutex);
+}
+void logTask(void*) {
+  uint32_t lastCount = loopCount, movedAt = millis(), lastHb = millis(), lastStallLine = 0;
+  bool stalled = false;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    uint32_t now = millis(), c = loopCount;
+    if (c != lastCount) {
+      if (stalled) { stalled = false; logf("LOOP runs again after %lu s", (unsigned long)((now - movedAt) / 1000)); }
+      lastCount = c; movedAt = now;
+    } else if (now - movedAt > 5000 && (!stalled || now - lastStallLine > 60000)) {
+      stalled = true; lastStallLine = now;
+      logf("LOOP STALLED for %lu s in step '%s'", (unsigned long)((now - movedAt) / 1000), ST_NAME[loopStage]);
+    }
+    if (now - lastHb >= 300000) {
+      lastHb = now;
+      bool up = WiFi.status() == WL_CONNECTED;
+      logf("hb frames=%lu full=%lu tiles=%lu maxgap=%lums maxdraw=%lums heap=%lu min=%lu wifi=%d rssi=%d temp=%.0f",
+           (unsigned long)statFrames, (unsigned long)statFull, (unsigned long)statTiles, (unsigned long)statMaxGap, (unsigned long)statMaxDraw,
+           (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(), up ? 1 : 0, up ? (int)WiFi.RSSI() : 0, (double)temperatureRead());
+      statFrames = 0; statFull = 0; statTiles = 0; statMaxGap = 0; statMaxDraw = 0; statSlow = 0;
+    }
+    logFlush();
+  }
+}
+const char* resetReasonName(int r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "CRASH (panic)";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "BROWN-OUT (supply dipped)";
+    case ESP_RST_EXT: return "reset pin";
+    default: return "other";
+  }
+}
+
 /* ---------------- settings ---------------- */
 void loadSettings() {
   prefs.begin("vfd", true);
@@ -200,6 +291,7 @@ void setFilament(bool on) {
   if (on == filOn) return;
   filOn = on;
   digitalWrite(PIN_FIL, on ? HIGH : LOW);
+  logf("display: filament %s", on ? "on" : "off");
 }
 static inline uint8_t swap8(uint8_t b) { b = (b & 0xF0) >> 4 | (b & 0x0F) << 4; b = (b & 0xCC) >> 2 | (b & 0x33) << 2; return (b & 0xAA) >> 1 | (b & 0x55) << 1; }
 static void vfdCmd(uint8_t cmd, const uint8_t* args = nullptr, int n = 0) {
@@ -230,13 +322,13 @@ void pushFB() {
     uint8_t bit = 1 << (y & 7);
     for (int x = 0; x < 256; x++) if (row[x]) dst[x] |= bit;
   }
-  if (forceSend) { u8g2.sendBuffer(); memcpy(lastSent, buf, sizeof lastSent); forceSend = false; return; }
+  if (forceSend) { u8g2.sendBuffer(); memcpy(lastSent, buf, sizeof lastSent); forceSend = false; statFull++; return; }
   // send only the changed part of each 8-pixel row band
   for (int ty = 0; ty < 6; ty++) {
     const uint8_t *a = buf + ty * 256, *b = lastSent + ty * 256;
     int t0 = -1, t1 = -1;
     for (int tx = 0; tx < 32; tx++) if (memcmp(a + tx * 8, b + tx * 8, 8)) { if (t0 < 0) t0 = tx; t1 = tx; }
-    if (t0 >= 0) u8g2.updateDisplayArea(t0, ty, t1 - t0 + 1, 1);
+    if (t0 >= 0) { u8g2.updateDisplayArea(t0, ty, t1 - t0 + 1, 1); statTiles += t1 - t0 + 1; }
   }
   memcpy(lastSent, buf, sizeof lastSent);
 }
@@ -272,7 +364,7 @@ void initDisplay(bool hard = true) {
   vfdCmd(0x78, osc, 1);
   forceSend = true;
   reinitCount++;
-  if (hard) Serial.printf("[vfd] display init (u8g2.begin = %d)\n", ok);
+  if (hard) logf("display: full init (u8g2.begin = %d)", ok);
 }
 
 // Re-send the controller configuration without reset or clear. If a glitch on the bus or the supply changed
@@ -293,8 +385,7 @@ void onWifiEvent(arduino_event_t* ev) {
   if (ev->event_id != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
   uint8_t r = ev->event_info.wifi_sta_disconnected.reason;
   if (r == WIFI_REASON_ASSOC_LEAVE) return;  // our own disconnect()
-  if (r != wifiReason) Serial.printf("[vfd] wifi: dropped, reason %u %s\n", r, WiFi.STA.disconnectReasonName((wifi_err_reason_t)r));
-  wifiReason = r;
+  wifiReason = r;   // logged by wifiWatch (this runs on the small event-task stack)
   wifiHeal = true;
 }
 String wifiReasonText() {  // "202 AUTH FAIL"
@@ -306,6 +397,12 @@ String wifiReasonText() {  // "202 AUTH FAIL"
 
 /* ---------------- system stats ---------------- */
 void updateSys() {
+  // the wall clock against the running time: a jump means the time was set (first sync, or a correction)
+  static int64_t lastWall = 0, lastMono = 0;
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  int64_t wall = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000, mono = esp_timer_get_time() / 1000;
+  if (lastMono) { int64_t d = (wall - lastWall) - (mono - lastMono); if (d > 1000 || d < -1000) logf("clock: set, moved by %lld ms", (long long)d); }
+  lastWall = wall; lastMono = mono;
   vfd::Sys S;
   S.cpu = std::min(100.0, renderMsAvg / (50.0 / 3) * 100);   // share of the 16.7 ms frame budget
   uint32_t hs = ESP.getHeapSize(); S.ram = hs ? (hs - ESP.getFreeHeap()) * 100.0 / hs : 0;
@@ -489,7 +586,8 @@ bool loadProject(const String& id) {
   return ok;
 }
 void loadActive() {
-  if (loadProject(activeId)) return;
+  if (loadProject(activeId)) { logf("project: %s", activeId.c_str()); return; }
+  logf("project: %s could not be loaded, built-in clock instead", activeId.c_str());
   vfd::parseProject(DEMO_JSON[0], strlen(DEMO_JSON[0]), proj, nullptr, loadFontFile);  // fallback: built-in clock
 }
 
@@ -528,7 +626,7 @@ bool wxKeepRestore() {
   W.code = k.code; W.nh = k.nh; W.day = k.day;
   memcpy(W.sunrise, k.sunrise, 6); W.sunrise[5] = 0; memcpy(W.sunset, k.sunset, 6); W.sunset[5] = 0;
   xSemaphoreTake(wxMutex, portMAX_DELAY); vfd::WX = W; xSemaphoreGive(wxMutex);
-  Serial.printf("[vfd] weather: restored, %ld min old\n", (long)(age / 60));
+  logf("weather: restored, %ld min old", (long)(age / 60));
   return true;
 }
 
@@ -587,9 +685,9 @@ void weatherTask(void*) {
     uint32_t wait = (f && !wxRequest) ? min(900000UL, 30000UL << min((int)f, 5)) : 5000;
     if (due && WiFi.status() == WL_CONNECTED && cfg.hasLoc && now - wxLastTry > wait) {
       wxRequest = false; wxLastTry = now;
-      if (fetchWeather()) { wxLastOk = millis(); wxFails = 0; }
-      else if (wxFails < 250) wxFails++;
-      Serial.printf("[vfd] weather: %s\n", wxError.length() ? wxError.c_str() : "ok");
+      bool had = wxFails > 0 || !wxLastOk;
+      if (fetchWeather()) { wxLastOk = millis(); wxFails = 0; if (had) logf("weather: ok"); }
+      else { if (wxFails < 250) wxFails++; logf("weather: failed %u in a row (%s)", (unsigned)wxFails, wxError.c_str()); }
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -616,7 +714,8 @@ void rotateStep() {
     const String& next = pl[(idx + k) % pl.size()];
     // A switch changes the whole image at once. Settings and a full frame go out with it, so a transfer the
     // controller missed cannot leave parts of the previous project standing.
-    if (LittleFS.exists(pathOf(next)) && loadProject(next)) { activeId = next; displayHeal(); lastDisplayHeal = millis(); return; }
+    if (LittleFS.exists(pathOf(next)) && loadProject(next)) { activeId = next; displayHeal(); lastDisplayHeal = millis(); logf("project: %s", next.c_str()); return; }
+    logf("project: %s could not be loaded", next.c_str());
   }
 }
 
@@ -667,8 +766,8 @@ void renderStep() {
   vfd::TimeT T;
   bool synced = getTime(T);
   bool live = liveOn && (int32_t)(liveUntil - now) > 0, msg = msgOn && (int32_t)(msgUntil - now) > 0;
-  if (!live) liveOn = false;
-  if (!msg) msgOn = false;
+  if (!live && liveOn) { liveOn = false; logf("live mirror: ended"); }
+  if (!msg && msgOn) { msgOn = false; logf("message: ended"); }
   bool night = synced && inNight(T);
 
   if (night && cfg.nightOff && !live && !msg) { setFilament(false); return; }
@@ -676,11 +775,15 @@ void renderStep() {
   int b = brightOverride >= 0 ? brightOverride : proj.brightness;
   if (night) b = min(b, cfg.nightLevel);
 
-  if (live) { setContrast(b); xbmToFB(liveBuf); pushFB(); return; }
+  if (live) { loopStage = ST_SEND; statFrames++; setContrast(b); xbmToFB(liveBuf); pushFB(); return; }
   double dip = 1;
+  loopStage = ST_DRAW_WAIT;
   xSemaphoreTake(wxMutex, portMAX_DELAY);
+  loopStage = ST_DRAW;
   if (msg) drawMessage(T); else dip = vfd::renderProject(fb, proj, T, 0);
   xSemaphoreGive(wxMutex);
+  loopStage = ST_SEND;
+  statFrames++;
   setContrast(msg ? max(b, 120) : vfd::jround(b * dip));
   if (msg) { pushFB(); return; }
   if (!synced) {
@@ -768,6 +871,7 @@ void setupApi() {
       [tmp]() {
         static File up;
         HTTPUpload& u = server.upload();
+        loopCount++;
         if (u.status == UPLOAD_FILE_START) { uploadDenied = !(hostOk() && writeOk()); LittleFS.remove(tmp); if (!uploadDenied) up = LittleFS.open(tmp, "w"); }
         else if (uploadDenied) return;
         else if (u.status == UPLOAD_FILE_WRITE) { if (up && up.write(u.buf, u.currentSize) != u.currentSize) { up.close(); LittleFS.remove(tmp); } }
@@ -801,7 +905,7 @@ void setupApi() {
     d["builder"] = LittleFS.exists("/builder.html.gz");
     sendJson(200, d);
   });
-  server.on("/api/display/reinit", HTTP_POST, []() { if (!guard(true)) return; initDisplay(); sendOk(); });
+  server.on("/api/display/reinit", HTTP_POST, []() { if (!guard(true)) return; logf("display: re-init requested from the Studio"); initDisplay(); sendOk(); });
 
   server.on("/api/weather", HTTP_GET, []() { if (!guard(false)) return;
     JsonDocument d;
@@ -971,6 +1075,7 @@ void setupApi() {
     std::vector<uint8_t> b = vfd::b64decode(server.arg("plain").c_str());
     if (b.size() != sizeof liveBuf) return sendErr(400, "need 1536 bytes");
     memcpy(liveBuf, b.data(), sizeof liveBuf);
+    if (!liveOn) logf("live mirror: started (the Studio is sending the image)");
     liveUntil = millis() + 1500; liveOn = true;
     server.send(204);
   });
@@ -980,10 +1085,38 @@ void setupApi() {
     msgText = d["text"] | "";
     int sec = constrain((int)(d["sec"] | 10), 1, 3600);
     msgStart = millis(); msgUntil = msgStart + sec * 1000UL; msgOn = true;
+    logf("message: shown for %d s", sec);
     sendOk();
   });
 
-  server.on("/api/reboot", HTTP_POST, []() { if (!guard(true)) return; sendOk(); rebootAt = millis() + 400; });
+  server.on("/api/reboot", HTTP_POST, []() { if (!guard(true)) return; sendOk(); logf("restart requested from the Studio"); logFlush(); rebootAt = millis() + 400; });
+
+  // event log: old file first, then the current one
+  server.on("/api/log", HTTP_GET, []() { if (!guard(false)) return;
+    logFlush();
+    xSemaphoreTake(logFileMutex, portMAX_DELAY);   // no rotation while the files are being sent
+    static uint8_t buf[1024];
+    size_t total = 0;
+    for (const char* path : { "/log.old", "/log.txt" }) if (LittleFS.exists(path)) { File f = LittleFS.open(path, "r"); if (f) { total += f.size(); f.close(); } }
+    server.setContentLength(total);
+    server.send(200, "text/plain", "");
+    for (const char* path : { "/log.old", "/log.txt" }) {
+      if (!LittleFS.exists(path)) continue;
+      File f = LittleFS.open(path, "r");
+      if (!f) continue;
+      size_t n;
+      while ((n = f.read(buf, sizeof buf)) > 0) { server.sendContent((const char*)buf, n); loopCount++; }
+      f.close();
+    }
+    xSemaphoreGive(logFileMutex);
+  });
+  server.on("/api/log", HTTP_DELETE, []() { if (!guard(true)) return;
+    xSemaphoreTake(logFileMutex, portMAX_DELAY);
+    LittleFS.remove("/log.old"); LittleFS.remove("/log.txt");
+    xSemaphoreGive(logFileMutex);
+    logf("log cleared");
+    sendOk();
+  });
 
   server.on("/api/wifi/forget", HTTP_POST, []() { if (!guard(true)) return;
     cfg.ssid = ""; cfg.pass = ""; saveSettings();
@@ -997,11 +1130,12 @@ void setupApi() {
       bool ok = !Update.hasError() && Update.isFinished();
       String err = ok ? "" : String(Update.errorString());
       server.send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"" + err + "\"}");
-      if (ok) { statusScreen("UPDATE OK", "RESTARTING", "", 100); rebootAt = millis() + 800; }
+      if (ok) { logf("firmware update: ok, restarting"); statusScreen("UPDATE OK", "RESTARTING", "", 100); rebootAt = millis() + 800; }
       else { statusScreen("UPDATE FAILED", err, "OLD FIRMWARE KEEPS RUNNING"); statusUntil = millis() + 6000; }
     },
     []() {
       HTTPUpload& up = server.upload();
+      loopCount++;   // a long upload is not a stalled loop
       static size_t total = 0;
       if (up.status == UPLOAD_FILE_START) uploadDenied = !(hostOk() && writeOk());
       if (uploadDenied) return;   // nothing is written to the update partition
@@ -1070,6 +1204,7 @@ void apScreen() {
   statusScreen("WIFI SETUP", "JOIN  " + apName, l3);
 }
 void startAP() {
+  logf("start: setup network (%s)", cfg.ssid.length() ? (wifiReason ? wifiReasonText().c_str() : "no answer") : "no network saved");
   apFail = ""; apFailHtml = "";
   if (cfg.ssid.length()) {
     String why = wifiReason ? wifiReasonText() : String("NO ANSWER");
@@ -1113,7 +1248,7 @@ void wifiBegin() {
 }
 void wifiKick() {  // drop whatever the driver is doing and connect from scratch
   wifiKicks++;
-  Serial.printf("[vfd] wifi: reconnecting (%s)\n", wifiReason ? wifiReasonText().c_str() : "no reason yet");
+  if (wifiKicks <= 3 || wifiKicks % 10 == 0) logf("wifi: attempt %lu (%s)", (unsigned long)wifiKicks, wifiReason ? wifiReasonText().c_str() : "no reason yet");
   WiFi.disconnect();
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
 }
@@ -1136,10 +1271,12 @@ bool connectWifi() {
 // 30 s. In between the radio is quiet and the display gets clean frames.
 void wifiWatch() {
   uint32_t now = millis();
+  static uint8_t loggedReason = 0;
+  if (wifiReason != loggedReason) { loggedReason = wifiReason; logf("wifi: dropped, reason %s", wifiReasonText().c_str()); }
   if (wifiHeal) { wifiHeal = false; displayHeal(); lastDisplayHeal = now; }
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiDown) {
-      wifiDown = false; Serial.printf("[vfd] wifi: back after %lu s\n", (unsigned long)((now - wifiDownAt) / 1000));
+      wifiDown = false; logf("wifi: back after %lu s, rssi %d", (unsigned long)((now - wifiDownAt) / 1000), (int)WiFi.RSSI());
       displayHeal(); lastDisplayHeal = now;   // the radio was busy: make sure the display is in step again
       WiFi.setAutoReconnect(true);
       WiFi.setSleep(false);            // also covers a start without network
@@ -1147,7 +1284,7 @@ void wifiWatch() {
     }
     return;
   }
-  if (!wifiDown) { wifiDown = true; wifiDownAt = now; wifiKickAt = now + 30000; Serial.println("[vfd] wifi: connection lost"); displayHeal(); lastDisplayHeal = now; return; }
+  if (!wifiDown) { wifiDown = true; wifiDownAt = now; wifiKickAt = now + 30000; logf("wifi: connection lost"); displayHeal(); lastDisplayHeal = now; return; }
   if ((int32_t)(now - wifiKickAt) >= 0) { wifiKickAt = now + 30000; WiFi.setAutoReconnect(false); wifiKick(); }
 }
 
@@ -1158,7 +1295,7 @@ void startOnline(bool connected) {
   MDNS.begin(cfg.name.c_str());
   MDNS.addService("http", "tcp", 80);
   ArduinoOTA.setHostname(cfg.name.c_str());
-  ArduinoOTA.onStart([]() { statusScreen("FIRMWARE UPDATE", "ARDUINO OTA", "", 0); });
+  ArduinoOTA.onStart([]() { logf("firmware update (Arduino OTA) started"); logFlush(); statusScreen("FIRMWARE UPDATE", "ARDUINO OTA", "", 0); });
   ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { static uint32_t l = 0; if (millis() - l > 250) { l = millis(); statusScreen("FIRMWARE UPDATE", "ARDUINO OTA", "", t ? p * 100 / t : 0); } });
   ArduinoOTA.onError([](ota_error_t e) { statusScreen("UPDATE FAILED", String("ERROR ") + (int)e); statusUntil = millis() + 4000; });
   ArduinoOTA.begin();
@@ -1166,13 +1303,15 @@ void startOnline(bool connected) {
   xTaskCreatePinnedToCore(weatherTask, "weather", 12288, nullptr, 1, nullptr, 0);
   setupApi();
   server.begin();
-  if (!connected) { Serial.println("[vfd] wifi: no connection, running offline"); return; }
+  if (!connected) { logf("start: no network, running offline with the kept time"); return; }
+  logf("start: online, rssi %d", (int)WiFi.RSSI());
   onlineScreen();
   statusUntil = millis() + 6000;
 }
 
 /* ---------------- setup / loop ---------------- */
 void setup() {
+  logMutex = xSemaphoreCreateMutex(); logFileMutex = xSemaphoreCreateMutex();
   pinMode(PIN_FIL, OUTPUT);
   digitalWrite(PIN_FIL, LOW);
   pinMode(PIN_BOOT, INPUT_PULLUP);
@@ -1210,6 +1349,7 @@ void setup() {
   if (prefs.getString("fwSeen", "") != FW_VERSION) { LittleFS.remove("/studio.html.gz"); prefs.putString("fwSeen", FW_VERSION); }
   prefs.end();
   setenv("TZ", cfg.tz.c_str(), 1); tzset();
+  logf("==== BOOT firmware " FW_VERSION ", reset: %s", resetReasonName((int)why));
   seedDemos();
   loadActive();
 
@@ -1220,33 +1360,45 @@ void setup() {
   if (cfg.ssid.length() && connectWifi()) startOnline(true);
   else if (cfg.ssid.length() && getTime(T)) startOnline(false);
   else startAP();
+  loopStage = ST_IDLE;
+  xTaskCreatePinnedToCore(logTask, "log", 8192, nullptr, 2, nullptr, 0);
 }
 
+// one step of the main loop: remembers which step is running (for the stall line) and logs a step that took long
+#define STEP(id, code) { loopStage = id; uint32_t _t = millis(); code; uint32_t _d = millis() - _t; \
+  if (_d > 250 && statSlow < 20) { statSlow++; logf("slow step '%s': %lu ms", ST_NAME[id], (unsigned long)_d); } loopStage = ST_IDLE; }
+
 void loop() {
-  server.handleClient();
+  static uint32_t lastLoopAt = 0;
+  uint32_t la = millis();
+  if (lastLoopAt && la - lastLoopAt > statMaxGap) statMaxGap = la - lastLoopAt;
+  lastLoopAt = la;
+  loopCount++;
+
+  STEP(ST_WEB, server.handleClient());
   if (apMode) {
     dns.processNextRequest();
     // stored network unreachable (e.g. router still booting): retry every 3 minutes while nobody uses the portal
-    if (cfg.ssid.length() && WiFi.softAPgetStationNum() == 0 && millis() - apSince > 180000) ESP.restart();
+    if (cfg.ssid.length() && WiFi.softAPgetStationNum() == 0 && millis() - apSince > 180000) { logf("setup network: restarting to try the saved network again"); logFlush(); ESP.restart(); }
     if (apFail.length() && !rebootAt && millis() - apScreenAt > 4000) { apScreenAt = millis(); apAlt = !apAlt; apScreen(); }
   } else {
-    ArduinoOTA.handle();
-    wifiWatch();
+    STEP(ST_OTA, ArduinoOTA.handle());
+    STEP(ST_WIFI, wifiWatch());
   }
 
   // hold BOOT 5 s: forget Wi-Fi and restart in setup mode
+  loopStage = ST_BUTTON;
   if (digitalRead(PIN_BOOT) == LOW) {
     if (!bootDown) bootDown = millis();
-    else if (millis() - bootDown > 5000) { cfg.ssid = ""; cfg.pass = ""; saveSettings(); statusScreen("WIFI RESET", "RESTARTING"); delay(1000); ESP.restart(); }
+    else if (millis() - bootDown > 5000) { cfg.ssid = ""; cfg.pass = ""; saveSettings(); logf("BOOT held 5 s: Wi-Fi forgotten, restarting"); logFlush(); statusScreen("WIFI RESET", "RESTARTING"); delay(1000); ESP.restart(); }
   } else bootDown = 0;
 
-  if (rebootAt && (int32_t)(millis() - rebootAt) >= 0) { delay(100); ESP.restart(); }
-  if (reloadPending) { reloadPending = false; loadActive(); }
-  if (!apMode) rotateStep();
+  if (rebootAt && (int32_t)(millis() - rebootAt) >= 0) { logFlush(); delay(100); ESP.restart(); }
+  STEP(ST_PROJECT, { if (reloadPending) { reloadPending = false; loadActive(); } if (!apMode) rotateStep(); });
   // safety net: initialise the display once more after ~8 s (module fully powered by then)
-  if (!reinitDone && millis() > 8000) { reinitDone = true; initDisplay(); lastSoftInit = millis(); }
+  if (!reinitDone && millis() > 8000) { reinitDone = true; loopStage = ST_REINIT; initDisplay(); lastSoftInit = millis(); }
   // periodic soft re-init: cures a controller that stopped taking new images (short blink)
-  if (!apMode && filOn && cfg.reinitMin > 0 && millis() - lastSoftInit >= (uint32_t)cfg.reinitMin * 60000UL) { lastSoftInit = millis(); initDisplay(false); }
+  if (!apMode && filOn && cfg.reinitMin > 0 && millis() - lastSoftInit >= (uint32_t)cfg.reinitMin * 60000UL) { lastSoftInit = millis(); loopStage = ST_REINIT; initDisplay(false); }
 
   // 60 fps on the wall-clock frame grid (one frame per 16.67 ms, 3 per 50 ms): every frame is drawn right after
   // its boundary, so motion advances in even steps, the same grid the studio preview uses
@@ -1254,13 +1406,18 @@ void loop() {
   int64_t frameNo = ((int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000) * 3 / 50;
   if (frameNo != lastFrameNo) {
     lastFrameNo = frameNo;
+    loopStage = ST_DRAW;
     uint32_t t0 = micros(); renderStep(); float ms = (micros() - t0) / 1000.0f;
     renderMsAvg = renderMsAvg * 0.95f + ms * 0.05f;
-  } else delay(1);
-  if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); updateSys(); }
+    if ((uint32_t)ms > statMaxDraw) statMaxDraw = (uint32_t)ms;
+    if (ms > 250 && statSlow < 20) { statSlow++; logf("slow step 'draw+send': %lu ms", (unsigned long)ms); }
+  } else { loopStage = ST_IDLE; delay(1); }
+  if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); loopStage = ST_SYS; updateSys(); }
+  loopStage = ST_HEAL;
   if (!apMode && filOn && millis() - lastDisplayHeal >= 10000) { lastDisplayHeal = millis(); displayHeal(); }
   // Between heals only changed tiles are sent. If the controller misses one (bus or supply glitch, e.g. while the
   // radio is working hard on a bad connection), the old content would stay there. A full frame every second
   // (about 10 ms) limits that to one second.
   if (!apMode && filOn && millis() - lastFullFrame >= 1000) { lastFullFrame = millis(); forceSend = true; }
+  loopStage = ST_IDLE;
 }

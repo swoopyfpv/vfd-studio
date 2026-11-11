@@ -1,4 +1,4 @@
-# VFD Studio firmware 2.5.3
+# VFD Studio firmware 2.5.4
 
 ESP32-S3 Super Mini + GP1294AI 256×48 VFD (EEI module).
 
@@ -86,6 +86,25 @@ Studio → Device → Settings → Brightness limit (default 300 of 1023). Proje
 - Every 5 minutes (Settings → Display refresh, 0 = off) it re-initialises the controller with a software reset
   and writes the current image straight back: a very short blink, and a frozen image comes back.
 - Studio → Device → Re-init display does a full reset at any time. System shows how many re-inits ran.
+
+## Event log (for tracking down freezes)
+
+`http://vfd.local/api/log` returns the log as text; `DELETE /api/log` (with `X-VFD: 1`) clears it. It is stored on the
+display (`/log.txt`, at 96 KB it becomes `/log.old`), so it survives restarts and power cuts and can be read after
+the network is back. Each line: date and time, seconds since start, event.
+
+- `==== BOOT … reset: …`: every start with its cause (power-on, crash, brown-out, software restart).
+- `wifi: …`: connection lost (with the reason), reconnect attempts, back (with the signal strength).
+- `weather: …`: failed fetches and the first one that works again. `clock: set, moved by …`: time syncs.
+- `project: …`: every switch of the rotation. `display: …`: full re-inits, filament on/off. Messages, live mirror, updates.
+- `hb …` every 5 minutes: `frames` drawn (about 18000), `full` frames and changed `tiles` sent to the display,
+  `maxgap` (longest pause of the main loop, ms), `maxdraw` (slowest frame, ms), free memory, Wi-Fi state, chip temperature.
+- `slow step '…': … ms`: one step of the main loop took longer than 250 ms.
+- `LOOP STALLED for … s in step '…'`: the main loop has not moved for 5 s; written by a separate task, repeated every minute.
+
+Reading it after a freeze: if `hb` lines keep coming with normal `frames` and `full` numbers, the firmware kept drawing
+and sending, and the display did not take the data. A `LOOP STALLED` line names the step where the firmware hung.
+A `BOOT` line with crash or brown-out shows a restart.
 
 ## Frame rate and smooth motion
 
