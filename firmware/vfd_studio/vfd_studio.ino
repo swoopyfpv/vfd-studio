@@ -14,8 +14,15 @@
 //  Optional light sensor: LII_SW to GPIO 1, with 47 kΩ from GPIO 1 to 3.3 V.
 // ============================================================
 #include <Arduino.h>
+#ifndef STUDIO_TFT
+#define STUDIO_TFT 0  // tools/prepare-tft.sh selects the RGB LCD build.
+#endif
+#if STUDIO_TFT
+#include "tft_8048s043.h"
+#else
 #include <SPI.h>
 #include <U8g2lib.h>
+#endif
 #include <stdarg.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -41,7 +48,15 @@
 #include "studio.h"
 #include "setup_page.h"
 
+#if STUDIO_TFT
+#define FW_VERSION "2.5.6-tft.1"
+static constexpr char DefaultName[] = "tft", SetupPrefix[] = "TFT-SETUP-";
+static constexpr int DefaultMaxBright = 1023, DefaultReinit = 0;
+#else
 #define FW_VERSION "2.5.6"
+static constexpr char DefaultName[] = "vfd", SetupPrefix[] = "VFD-SETUP-";
+static constexpr int DefaultMaxBright = 300, DefaultReinit = 5;
+#endif
 #define DEMO_VERSION 4
 
 // Last weather, kept in RTC memory across restarts (see "weather kept across restarts"). Defined up here because
@@ -59,9 +74,11 @@ struct WxKeep {
 // 0 = fast software SPI (default): direct register writes, ~1.5 MHz, about 10 ms per full frame
 // 1 = hardware SPI, 4 MHz
 // 2 = U8g2's own software SPI (slow, ~70 ms per frame; the method from the 2023 setup)
+static const int PIN_BOOT = 0;
+#if !STUDIO_TFT
 #define VFD_SPI 0
 
-static const int PIN_CLK = 4, PIN_DATA = 5, PIN_CS = 6, PIN_RST = 7, PIN_FIL = 8, PIN_BOOT = 0;
+static const int PIN_CLK = 4, PIN_DATA = 5, PIN_CS = 6, PIN_RST = 7, PIN_FIL = 8;
 static const int PIN_LIGHT = 1;
 
 #if VFD_SPI == 1
@@ -111,12 +128,13 @@ uint8_t fastSpiByte(u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr) {
   return 1;
 }
 #endif
+#endif
 WebServer server(80);
 DNSServer dns;
 Preferences prefs;
 
 struct Settings {
-  String ssid, pass, name = "vfd", tz = "CET-1CEST,M3.5.0,M10.5.0/3";
+  String ssid, pass, name = DefaultName, tz = "CET-1CEST,M3.5.0,M10.5.0/3";
   bool wifiLowTx = true;
   bool nightOn = false, nightOff = false;
   int nightFrom = 23 * 60, nightTo = 7 * 60, nightLevel = 40;
@@ -124,9 +142,13 @@ struct Settings {
   bool hasLoc = false;
   double lat = 0, lon = 0;
   int playSec = 30;
-  int maxBright = 300;        // dimming value at full brightness (0-1023). Datasheet: below 300 delays aging.
+  int maxBright = DefaultMaxBright;  // dimming value at full brightness (0-1023)
   bool autoBrightness = false;
-  int reinitMin = 5;          // re-initialise the display controller every N minutes (0 = off)
+  int reinitMin = DefaultReinit;  // re-initialise the VFD controller every N minutes (0 = off)
+#if STUDIO_TFT
+  tft::Appearance panel;
+  bool panelScenes = false;
+#endif
 } cfg;
 
 // weather: written by a background task, read by the renderer
@@ -142,10 +164,19 @@ static vfd::Project proj;
 static String activeId = "neon-clock";
 static bool reloadPending = false, apMode = false, filOn = false, liveOn = false, msgOn = false;  // explicit flags: timers alone wrap after ~24.8 days
 static int brightOverride = -1, lastContrast = -1, lastBright = 200;
-static int lightMv = -1, lightPercent = 0;
 static uint8_t liveBuf[1536];
+#if STUDIO_TFT
+static tft::Hardware panel;
+static tft::View panelView = tft::View::Clock;
+static bool panelDirty = true, panelStatusDirty = true;
+static uint32_t panelWakeUntil = 0;
+static String panelHeading, panelDetail, panelNote;
+static int panelProgress = -1;
+#else
+static int lightMv = -1, lightPercent = 0;
 static uint8_t lastSent[256 * 6];
 static bool forceSend = true, reinitDone = false;
+#endif
 static uint32_t liveUntil = 0, msgUntil = 0, msgStart = 0, statusUntil = 0, rebootAt = 0, apSince = 0, bootDown = 0, lastFrame = 0;
 static String msgText, statusL1, statusL2, statusL3;
 static String apName, apOptions, apFail, apFailHtml;
@@ -249,12 +280,21 @@ const char* resetReasonName(int r) {
 }
 
 /* ---------------- settings ---------------- */
+#if STUDIO_TFT
+void writePanelPreferences() {
+  prefs.putInt("lcdTheme", cfg.panel.theme);
+  prefs.putBool("lcdFlip", cfg.panel.flipped);
+  prefs.putInt("lcdBacklight", cfg.panel.backlight);
+  prefs.putBool("lcdScenes", cfg.panelScenes);
+}
+#endif
+
 void loadSettings() {
   prefs.begin("vfd", true);
   cfg.ssid = prefs.getString("ssid", "");
   cfg.pass = prefs.getString("pass", "");
   cfg.wifiLowTx = prefs.getBool("wifiLowTx", true);
-  cfg.name = prefs.getString("name", "vfd");
+  cfg.name = prefs.getString("name", DefaultName);
   cfg.tz = prefs.getString("tz", cfg.tz);
   cfg.nightOn = prefs.getBool("nOn", false);
   cfg.nightOff = prefs.getBool("nOff", false);
@@ -268,9 +308,17 @@ void loadSettings() {
   cfg.lon = prefs.getDouble("lon", 0);
   cfg.playlist = prefs.getString("play", "");
   cfg.playSec = prefs.getInt("playSec", 30);
-  cfg.maxBright = prefs.getInt("maxBr", 300);
+  cfg.maxBright = prefs.getInt("maxBr", DefaultMaxBright);
+#if STUDIO_TFT
+  cfg.panel.theme = constrain(prefs.getInt("lcdTheme", 0), 0, tft::ThemeCount - 1);
+  cfg.panel.flipped = prefs.getBool("lcdFlip", false);
+  cfg.panel.backlight = constrain(prefs.getInt("lcdBacklight", 80), tft::MinBacklight, 100);
+  cfg.panelScenes = prefs.getBool("lcdScenes", false);
+  panelView = cfg.panelScenes ? tft::View::Scenes : tft::View::Clock;
+#else
   cfg.autoBrightness = prefs.getBool("autoBright", false);
-  cfg.reinitMin = prefs.getInt("reMin", 5);
+  cfg.reinitMin = prefs.getInt("reMin", DefaultReinit);
+#endif
   prefs.end();
 }
 void saveSettings() {
@@ -293,12 +341,17 @@ void saveSettings() {
   prefs.putString("play", cfg.playlist);
   prefs.putInt("playSec", cfg.playSec);
   prefs.putInt("maxBr", cfg.maxBright);
+#if STUDIO_TFT
+  writePanelPreferences();
+#else
   prefs.putBool("autoBright", cfg.autoBrightness);
   prefs.putInt("reMin", cfg.reinitMin);
+#endif
   prefs.end();
 }
 
 /* ---------------- ambient light ---------------- */
+#if !STUDIO_TFT
 void updateAmbientLight() {
   static uint32_t lastSample = 0;
   const uint32_t now = millis();
@@ -317,14 +370,20 @@ void updateAmbientLight() {
   const float clampedMv = constrain(lightMv, brightMv, darkMv);
   lightPercent = std::lround(100.0f * std::log(darkMv / clampedMv) / logRange);
 }
+#endif
 
 /* ---------------- display output ---------------- */
 void setFilament(bool on) {
   if (on == filOn) return;
   filOn = on;
+#if STUDIO_TFT
+  panel.setBacklight(on ? std::max(0, lastContrast) : 0);
+#else
   digitalWrite(PIN_FIL, on ? HIGH : LOW);
   logf("display: filament %s", on ? "on" : "off");
+#endif
 }
+#if !STUDIO_TFT
 static inline uint8_t swap8(uint8_t b) { b = (b & 0xF0) >> 4 | (b & 0x0F) << 4; b = (b & 0xCC) >> 2 | (b & 0x33) << 2; return (b & 0xAA) >> 1 | (b & 0x55) << 1; }
 static void vfdCmd(uint8_t cmd, const uint8_t* args = nullptr, int n = 0) {
   u8x8_t* u = u8g2.getU8x8();
@@ -333,11 +392,18 @@ static void vfdCmd(uint8_t cmd, const uint8_t* args = nullptr, int n = 0) {
   for (int i = 0; i < n; i++) u8x8_cad_SendArg(u, swap8(args[i]));
   u8x8_cad_EndTransfer(u);
 }
+#endif
 // Project brightness 0-255 is scaled to the dimming range 0..maxBright (controller: 0-1023).
 void setContrast(int c) {
   c = constrain(c, 0, 255);
   lastBright = c;
   int raw = (c * constrain(cfg.maxBright, 1, 1023) + 127) / 255;
+#if STUDIO_TFT
+  raw = (raw * cfg.panel.backlight + 50) / 100;
+  if (raw == lastContrast) return;
+  lastContrast = raw;
+  if (filOn) panel.setBacklight(raw);
+#else
   if (cfg.autoBrightness && lightMv >= 0) {
     // Keep 25% of the requested brightness at the dark end of the range.
     const int scale = 25 + (75 * lightPercent + 50) / 100;
@@ -348,7 +414,9 @@ void setContrast(int c) {
   const uint8_t a[2] = { (uint8_t)(raw & 0xFF), (uint8_t)(raw >> 8) };
   vfdCmd(0xA0, a, 2);
   forceSend = true;
+#endif
 }
+#if !STUDIO_TFT
 // fb (1 byte per pixel) -> u8g2 buffer (vertical bytes, LSB on top) -> display
 void pushFB() {
   uint8_t* buf = u8g2.getBufferPtr();
@@ -369,6 +437,7 @@ void pushFB() {
   }
   memcpy(lastSent, buf, sizeof lastSent);
 }
+#endif
 void xbmToFB(const uint8_t* x) {
   for (int y = 0; y < 48; y++)
     for (int c = 0; c < 256; c++) fb.p[y * 256 + c] = (x[y * 32 + (c >> 3)] >> (c & 7)) & 1;
@@ -380,6 +449,13 @@ void xbmToFB(const uint8_t* x) {
 // soft: no pin reset, and the current image is written straight back instead of a blank GRAM, so it is only a
 //       very short blink. Runs every few minutes as a cure for a frozen controller.
 void initDisplay(bool hard = true) {
+#if STUDIO_TFT
+  if (hard) {
+    panel.restart();
+    panelDirty = panelStatusDirty = true;
+    reinitCount++;
+  }
+#else
   bool ok = true;
   if (hard) {
     pinMode(PIN_RST, OUTPUT);
@@ -402,16 +478,21 @@ void initDisplay(bool hard = true) {
   forceSend = true;
   reinitCount++;
   if (hard) logf("display: full init (u8g2.begin = %d)", ok);
+#endif
 }
 
 // Re-send the controller configuration without reset or clear. If a glitch on the bus or the supply changed
 // the display mode or window, the image comes back within one interval. No flicker.
 void displayHeal() {
+#if STUDIO_TFT
+  panelDirty = true;
+#else
   static const uint8_t mode[7] = { 0x01, 0x1F, 0x00, 0xFF, 0x2F, 0x00, 0x20 }, pos[2] = { 0x00, 0x00 }, dmode[1] = { 0x00 };
   vfdCmd(0xCC, mode, 7);   // VFD mode
   vfdCmd(0xC0, pos, 2);    // display window
   vfdCmd(0x80, dmode, 1);  // display mode: normal scan
   lastContrast = -1; forceSend = true;  // contrast and a full frame follow with the next render
+#endif
 }
 
 /* ---------------- Wi-Fi failure reason ---------------- */
@@ -471,12 +552,58 @@ bool inNight(const vfd::TimeT& T) {
 }
 
 /* ---------------- status screens ---------------- */
+#if STUDIO_TFT
+void panelChrome(tft::Frame& frame) {
+  frame.view = panelView;
+  frame.online = WiFi.status() == WL_CONNECTED;
+  frame.setup = apMode;
+  frame.touch = panel.touchAvailable();
+  if (apMode || frame.online) {
+    if (!apMode && cfg.name.length() <= 12) snprintf(frame.address, sizeof frame.address, "%s.local", cfg.name.c_str());
+    else {
+      String ip = (apMode ? WiFi.softAPIP() : WiFi.localIP()).toString();
+      snprintf(frame.address, sizeof frame.address, "%s", ip.c_str());
+    }
+  }
+}
+
+void paintPanelStatus() {
+  if (!panelStatusDirty) return;
+  auto* pixels = panel.beginFrame();
+  if (!pixels) return;
+  tft::Frame frame;
+  panelChrome(frame);
+  frame.content = tft::Content::Status;
+  frame.title = panelHeading.c_str();
+  frame.detail = panelDetail.c_str();
+  frame.note = panelNote.c_str();
+  frame.progress = panelProgress;
+  tft::draw(pixels, cfg.panel, frame);
+  if (panel.present()) {
+    panelStatusDirty = false;
+    panelDirty = true;
+    statFull++;
+  }
+}
+#else
 void drawCentered(const String& s, int y, int font, int scale) {
   std::string t(s.c_str());
   int w = vfd::textW(t, font, scale);
   vfd::drawText(fb, (256 - w) / 2, y, t, font, scale);
 }
+#endif
 void statusScreen(const String& l1, const String& l2 = "", const String& l3 = "", int progress = -1) {
+#if STUDIO_TFT
+  if (panelHeading != l1 || panelDetail != l2 || panelNote != l3 || panelProgress != progress) {
+    panelHeading = l1; panelDetail = l2; panelNote = l3; panelProgress = progress;
+    panelStatusDirty = true;
+  }
+  if (!apMode || panelView == tft::View::Clock || rebootAt) {
+    setFilament(true);
+    setContrast(255);
+    paintPanelStatus();
+  }
+#else
   fb.clear();
   vfd::Layer c; c.type = vfd::L_CORNERS; c.x = 0; c.y = 0; c.w = 256; c.h = 48; c.len = 4;
   vfd::Project dummy; vfd::TimeT T{}; vfd::drawLayer(fb, c, T, dummy, 0, 0);
@@ -487,9 +614,11 @@ void statusScreen(const String& l1, const String& l2 = "", const String& l3 = ""
   setFilament(true);
   setContrast(200);
   pushFB();
+#endif
 }
 
 /* ---------------- boot logo animation ---------------- */
+#if !STUDIO_TFT
 static inline bool xbmBit(const uint8_t* b, int w, int x, int y) { return (b[y * ((w + 7) >> 3) + (x >> 3)] >> (x & 7)) & 1; }
 static inline float easeOut3(float f) { f = f < 0 ? 0 : f > 1 ? 1 : f; return 1 - (1 - f) * (1 - f) * (1 - f); }
 void drawLogoFrame(uint32_t t) {
@@ -532,7 +661,12 @@ void drawLogoFrame(uint32_t t) {
   int32_t ts = (int32_t)t - 2250;
   if (ts > 0 && ts < 450) { int y = ts * 50 / 450 - 1; fb.color = 2; fb.hl(0, y, 256); fb.color = 1; }
 }
+#endif
 void bootAnimation() {
+#if STUDIO_TFT
+  statusScreen("TFT STUDIO", "STARTING", FW_VERSION);
+  delay(550);
+#else
   int bright = lastBright;
   uint32_t s = millis();
   for (;;) {
@@ -544,9 +678,13 @@ void bootAnimation() {
     delay(15);
   }
   setContrast(bright);
+#endif
 }
 // startup Wi-Fi screen: no names or addresses, just what is happening
 void connectingScreen(uint32_t t) {
+#if STUDIO_TFT
+  statusScreen("CONNECTING TO WI-FI");
+#else
   fb.clear();
   vfd::Layer c; c.type = vfd::L_CORNERS; c.x = 0; c.y = 0; c.w = 256; c.h = 48; c.len = 4;
   vfd::Project dummy; vfd::TimeT T{}; vfd::drawLayer(fb, c, T, dummy, 0, 0);
@@ -555,8 +693,12 @@ void connectingScreen(uint32_t t) {
   for (int i = 0; i < n; i++) { int d = abs(i - pos); if (d == 0) fb.box(x0 + i * 6 - 1, 29, 4, 4); else if (d == 1) fb.box(x0 + i * 6, 30, 2, 2); else fb.px(x0 + i * 6 + 1, 31); }
   setFilament(true);
   pushFB();
+#endif
 }
 void onlineScreen() {
+#if STUDIO_TFT
+  statusScreen("WI-FI ONLINE", cfg.name + ".local", WiFi.localIP().toString());
+#else
   fb.clear();
   vfd::Layer c; c.type = vfd::L_CORNERS; c.x = 0; c.y = 0; c.w = 256; c.h = 48; c.len = 4;
   vfd::Project dummy; vfd::TimeT T{}; vfd::drawLayer(fb, c, T, dummy, 0, 0);
@@ -565,6 +707,7 @@ void onlineScreen() {
   drawCentered(a, sc == 2 ? 16 : 20, 1, sc);
   setFilament(true);
   pushFB();
+#endif
 }
 
 /* ---------------- projects on flash ---------------- */
@@ -794,10 +937,130 @@ void drawMessage(const vfd::TimeT& T) {
   fb.box(6, 43, (int)((uint64_t)244 * left / (total ? total : 1)), 2);
 }
 
+#if STUDIO_TFT
+void panelTap() {
+  tft::Point point;
+  if (!panel.readTap(point) || rebootAt) return;
+  if (!filOn || lastContrast == 0) {
+    panelWakeUntil = millis() + 20000;
+    panelDirty = true;
+    return;
+  }
+  const auto action = tft::hitTest(tft::orient(point, cfg.panel.flipped), panelView);
+  const auto previous = cfg.panel;
+  const bool previousScenes = cfg.panelScenes;
+  switch (action) {
+    case tft::Action::Clock: panelView = tft::View::Clock; cfg.panelScenes = false; break;
+    case tft::Action::Scenes: panelView = tft::View::Scenes; cfg.panelScenes = true; break;
+    case tft::Action::Settings: panelView = tft::View::Settings; break;
+    case tft::Action::Ion: cfg.panel.theme = 0; break;
+    case tft::Action::Sodium: cfg.panel.theme = 1; break;
+    case tft::Action::Violet: cfg.panel.theme = 2; break;
+    case tft::Action::Turn: cfg.panel.flipped = !cfg.panel.flipped; break;
+    case tft::Action::Darker: cfg.panel.backlight = std::max(tft::MinBacklight, cfg.panel.backlight - 10); break;
+    case tft::Action::Brighter: cfg.panel.backlight = std::min(100, cfg.panel.backlight + 10); break;
+    case tft::Action::None: return;
+  }
+  panelDirty = panelStatusDirty = true;
+  if (previous.theme != cfg.panel.theme || previous.flipped != cfg.panel.flipped ||
+      previous.backlight != cfg.panel.backlight || previousScenes != cfg.panelScenes) {
+    prefs.begin("vfd", false);
+    writePanelPreferences();
+    prefs.end();
+  }
+}
+
+bool applyPanelSettings(JsonVariantConst input) {
+  if (!input.is<JsonObjectConst>()) return false;
+  auto value = [&](const char* key, int fallback) {
+    JsonVariantConst field = input[key];
+    return field.isNull() ? fallback : field.is<int>() ? field.as<int>() : -1;
+  };
+  const int theme = value("theme", cfg.panel.theme);
+  const int rotation = value("rotation", cfg.panel.flipped ? 180 : 0);
+  const int backlight = value("backlight", cfg.panel.backlight);
+  if (theme < 0 || theme >= tft::ThemeCount || (rotation != 0 && rotation != 180) ||
+      backlight < tft::MinBacklight || backlight > 100) return false;
+  cfg.panel = {theme, rotation == 180, backlight};
+  panelDirty = panelStatusDirty = true;
+  return true;
+}
+
+void renderPanelStep(const vfd::TimeT& T, bool synced, bool night, bool live, bool msg) {
+  static int64_t lastSecond = -1;
+  static bool previousOverlay = false;
+  if (panelWakeUntil && (int32_t)(panelWakeUntil - millis()) <= 0) panelWakeUntil = 0;
+  const bool awake = panelWakeUntil != 0;
+  if (night && cfg.nightOff && !awake && !live && !msg) {
+    setFilament(false);
+    return;
+  }
+  const bool settings = panelView == tft::View::Settings;
+  const bool scene = !settings && (live || msg || panelView == tft::View::Scenes);
+  int b = scene ? (brightOverride >= 0 ? brightOverride : proj.brightness) : 255;
+  if (night && !awake) b = min(b, cfg.nightLevel);
+  if (awake) b = max(b, 64);
+  if (!scene || live) setContrast(b);
+  setFilament(true);
+  const bool overlay = live || msg;
+  const int64_t second = T.t / 1000;
+  if (!scene && !panelDirty && previousOverlay == overlay && lastSecond == second) return;
+  auto* pixels = panel.beginFrame();
+  if (!pixels) return;
+
+  tft::Frame frame;
+  panelChrome(frame);
+  frame.time = T;
+  frame.synced = synced;
+  frame.content = settings ? tft::Content::Settings : scene ? tft::Content::Scene : tft::Content::Clock;
+  vfd::Weather weather;
+  if (scene) {
+    double dip = 1;
+    if (live) xbmToFB(liveBuf);
+    else {
+      xSemaphoreTake(wxMutex, portMAX_DELAY);
+      if (msg) drawMessage(T);
+      else dip = vfd::renderProject(fb, proj, T, 0);
+      xSemaphoreGive(wxMutex);
+    }
+    if (!live) setContrast(msg && !night ? max(b, 120) : vfd::jround(b * dip));
+    frame.scene = &fb;
+    frame.title = live ? "LIVE MIRROR" : msg ? "INCOMING MESSAGE" : (proj.name.empty() ? activeId.c_str() : proj.name.c_str());
+    frame.detail = live || msg ? "" : "STUDIO PROJECT";
+  } else if (!settings) {
+    // Copy once per redraw. The weather task can update without waiting for RGB rendering.
+    xSemaphoreTake(wxMutex, portMAX_DELAY);
+    weather = vfd::WX;
+    xSemaphoreGive(wxMutex);
+    frame.weather = &weather;
+  }
+  tft::draw(pixels, cfg.panel, frame);
+  if (panel.present()) {
+    panelDirty = false;
+    panelStatusDirty = true;
+    previousOverlay = overlay;
+    lastSecond = second;
+    statFrames++;
+    statFull++;
+  }
+}
+#endif
+
 void renderStep() {
+#if !STUDIO_TFT
   if (apMode) return;  // setup screen stays until Wi-Fi is configured
+#endif
   uint32_t now = millis();
+#if STUDIO_TFT
+  if ((statusUntil && (int32_t)(statusUntil - now) > 0) || (apMode && panelView == tft::View::Clock)) {
+    setContrast(255);
+    setFilament(true);
+    paintPanelStatus();
+    return;
+  }
+#else
   if (statusUntil && (int32_t)(statusUntil - now) > 0) return;  // a status screen is showing
+#endif
   statusUntil = 0;
 
   vfd::TimeT T;
@@ -807,6 +1070,9 @@ void renderStep() {
   if (!msg && msgOn) { msgOn = false; logf("message: ended"); }
   bool night = synced && inNight(T);
 
+#if STUDIO_TFT
+  renderPanelStep(T, synced, night, live, msg);
+#else
   if (night && cfg.nightOff && !live && !msg) { setFilament(false); return; }
   setFilament(true);
   int b = brightOverride >= 0 ? brightOverride : proj.brightness;
@@ -828,6 +1094,7 @@ void renderStep() {
     vfd::drawText(fb, 202, 42, WiFi.status() != WL_CONNECTED ? "NO WIFI" : "SYNC TIME", 0, 1);
   } else if (isOffline()) drawOfflineMark();
   pushFB();
+#endif
 }
 
 /* ---------------- HTTP helpers ---------------- */
@@ -929,9 +1196,13 @@ void setupApi() {
   // system stats
   server.on("/api/system", HTTP_GET, []() { if (!guard(false)) return;
     JsonDocument d;
+#if STUDIO_TFT
+    d["panel"] = "ESP32-8048S043C-I"; d["touch"] = panel.touchAvailable();
+#else
+    if (lightMv >= 0) { d["lightPercent"] = lightPercent; d["lightMv"] = lightMv; }
+#endif
     d["fw"] = FW_VERSION; d["chip"] = ESP.getChipModel(); d["cpuMHz"] = ESP.getCpuFreqMHz(); d["reinits"] = reinitCount; d["reinitMin"] = cfg.reinitMin;
     d["load"] = vfd::SYS.cpu; d["renderMs"] = renderMsAvg; d["temp"] = vfd::SYS.temp;
-    if (lightMv >= 0) { d["lightPercent"] = lightPercent; d["lightMv"] = lightMv; }
     d["heapTotal"] = ESP.getHeapSize(); d["heapFree"] = ESP.getFreeHeap(); d["heapMin"] = ESP.getMinFreeHeap();
     d["psramTotal"] = ESP.getPsramSize(); d["psramFree"] = ESP.getFreePsram();
     d["fsTotal"] = LittleFS.totalBytes(); d["fsUsed"] = LittleFS.usedBytes();
@@ -1059,7 +1330,11 @@ void setupApi() {
     JsonDocument d; if (!bodyJson(d)) return;
     String id = d["id"] | "";
     if (!validId(id) || !LittleFS.exists(pathOf(id))) return sendErr(404, "not found");
-    activeId = id; saveSettings(); reloadPending = true; lastSwitch = millis();
+    activeId = id;
+#if STUDIO_TFT
+    panelView = tft::View::Scenes; cfg.panelScenes = true; panelDirty = true;
+#endif
+    saveSettings(); reloadPending = true; lastSwitch = millis();
     sendOk();
   });
 
@@ -1078,14 +1353,24 @@ void setupApi() {
     d["nightOn"] = cfg.nightOn; d["nightFrom"] = cfg.nightFrom; d["nightTo"] = cfg.nightTo;
     d["nightMode"] = cfg.nightOff ? "off" : "dim"; d["nightLevel"] = cfg.nightLevel;
     d["city"] = cfg.city; if (cfg.hasLoc) { d["lat"] = cfg.lat; d["lon"] = cfg.lon; }
-    d["playSec"] = cfg.playSec; d["maxBright"] = cfg.maxBright; d["reinitMin"] = cfg.reinitMin;
+    d["playSec"] = cfg.playSec; d["maxBright"] = cfg.maxBright;
+#if STUDIO_TFT
+    JsonObject lcd = d["panel"].to<JsonObject>();
+    lcd["theme"] = cfg.panel.theme; lcd["rotation"] = cfg.panel.flipped ? 180 : 0;
+    lcd["backlight"] = cfg.panel.backlight; lcd["touch"] = panel.touchAvailable();
+#else
+    d["reinitMin"] = cfg.reinitMin;
     d["autoBrightness"] = cfg.autoBrightness;
+#endif
     JsonArray pl = d["playlist"].to<JsonArray>(); for (const String& id : playlistIds()) pl.add(id);
     sendJson(200, d);
   });
 
   server.on("/api/settings", HTTP_POST, []() { if (!guard(true)) return;
     JsonDocument d; if (!bodyJson(d)) return;
+#if STUDIO_TFT
+    if (!d["panel"].isNull() && !applyPanelSettings(d["panel"])) return sendErr(400, "invalid panel settings");
+#endif
     String name = d["name"] | cfg.name.c_str();
     if (validId(name)) { name.toLowerCase(); cfg.name = name; }
     cfg.wifiLowTx = d["wifiLowTx"] | cfg.wifiLowTx;
@@ -1103,8 +1388,10 @@ void setupApi() {
     } else if (d["noLoc"] | false) { cfg.hasLoc = false; }
     if (d["playSec"].is<int>()) cfg.playSec = constrain((int)d["playSec"], 5, 86400);
     if (d["maxBright"].is<int>()) { cfg.maxBright = constrain((int)d["maxBright"], 20, 1023); lastContrast = -1; }
+#if !STUDIO_TFT
     cfg.autoBrightness = d["autoBrightness"] | cfg.autoBrightness;
     if (d["reinitMin"].is<int>()) cfg.reinitMin = constrain((int)d["reinitMin"], 0, 1440);
+#endif
     if (d["playlist"].is<JsonArray>()) {
       String pl; for (JsonVariant v : d["playlist"].as<JsonArray>()) { String id = v | ""; if (validId(id)) { if (pl.length()) pl += ","; pl += id; } }
       cfg.playlist = pl; lastSwitch = millis();
@@ -1287,7 +1574,7 @@ void startAP() {
   WiFi.scanDelete();
   uint64_t mac = ESP.getEfuseMac();
   char suf[5]; snprintf(suf, sizeof suf, "%04X", (uint16_t)(mac >> 32));
-  apName = String("VFD-SETUP-") + suf;
+  apName = String(SetupPrefix) + suf;
   if (WiFi.softAP(apName.c_str())) applyWifiTxLimit();
   else logf("setup network: failed to start %s", apName.c_str());
   dns.start(53, "*", WiFi.softAPIP());
@@ -1368,17 +1655,23 @@ void startOnline(bool connected) {
   if (!connected) { logf("start: no network, running offline with the kept time"); return; }
   logf("start: online, rssi %d", (int)WiFi.RSSI());
   onlineScreen();
-  statusUntil = millis() + 6000;
+  statusUntil = millis() + (STUDIO_TFT ? 1600 : 6000);
 }
 
 /* ---------------- setup / loop ---------------- */
 void setup() {
   logMutex = xSemaphoreCreateMutex(); logFileMutex = xSemaphoreCreateMutex();
+#if !STUDIO_TFT
   pinMode(PIN_FIL, OUTPUT);
   digitalWrite(PIN_FIL, LOW);
+#endif
   pinMode(PIN_BOOT, INPUT_PULLUP);
   Serial.begin(115200);
 
+#if STUDIO_TFT
+  Serial.println("\n[tft] TFT Studio " FW_VERSION);
+  esp_reset_reason_t why = esp_reset_reason();
+#else
   Serial.println("\n[vfd] VFD Studio " FW_VERSION);
 #if VFD_SPI == 1
   SPI.begin(PIN_CLK, -1, PIN_DATA, -1);  // u8g2 then uses these pins for hardware SPI
@@ -1398,13 +1691,20 @@ void setup() {
   }
   fb.clear();
   initDisplay();
+#endif
 
   wxMutex = xSemaphoreCreateMutex();
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   loadSettings();
   wifiLowTxOnBoot = cfg.wifiLowTx;
+#if STUDIO_TFT
+  esp_err_t panelResult = panel.begin();
+  if (panelResult != ESP_OK) logf("display: ESP32-8048S043 LCD init failed: %s", esp_err_to_name(panelResult));
+  else logf("display: RGB LCD ready; GT911 %s", panel.touchAvailable() ? "detected" : "unavailable");
+#else
   // Arduino-ESP32 uses 11 dB ADC attenuation by default, with a calibrated range up to 3.1 V on the S3.
   updateAmbientLight();
+#endif
   WiFi.onEvent(onWifiEvent);                     // records why a connection attempt failed
   if (cfg.ssid.length()) wifiBegin();           // connects in the background while the logo plays
   lastBright = 230; lastContrast = -1;           // logo at 230 of 255 (scaled by the brightness limit)
@@ -1460,10 +1760,14 @@ void loop() {
 
   if (rebootAt && (int32_t)(millis() - rebootAt) >= 0) { logFlush(); delay(100); ESP.restart(); }
   STEP(ST_PROJECT, { if (reloadPending) { reloadPending = false; loadActive(); } if (!apMode) rotateStep(); });
+#if STUDIO_TFT
+  panelTap();
+#else
   // safety net: initialise the display once more after ~8 s (module fully powered by then)
   if (!reinitDone && millis() > 8000) { reinitDone = true; loopStage = ST_REINIT; initDisplay(); lastSoftInit = millis(); }
   // periodic soft re-init: cures a controller that stopped taking new images (short blink)
   if (!apMode && filOn && cfg.reinitMin > 0 && millis() - lastSoftInit >= (uint32_t)cfg.reinitMin * 60000UL) { lastSoftInit = millis(); loopStage = ST_REINIT; initDisplay(false); }
+#endif
 
   // 60 fps on the wall-clock frame grid (one frame per 16.67 ms, 3 per 50 ms): every frame is drawn right after
   // its boundary, so motion advances in even steps, the same grid the studio preview uses
@@ -1478,13 +1782,17 @@ void loop() {
     if (ms > 250 && statSlow < 20) { statSlow++; logf("slow step 'draw+send': %lu ms", (unsigned long)ms); }
   } else { loopStage = ST_IDLE; delay(1); }
   loopStage = ST_SYS;
+#if !STUDIO_TFT
   updateAmbientLight();
+#endif
   if (millis() - lastSysUpdate >= 1000) { lastSysUpdate = millis(); updateSys(); }
+#if !STUDIO_TFT
   loopStage = ST_HEAL;
   if (!apMode && filOn && millis() - lastDisplayHeal >= 10000) { lastDisplayHeal = millis(); displayHeal(); }
   // Between heals only changed tiles are sent. If the controller misses one (bus or supply glitch, e.g. while the
   // radio is working hard on a bad connection), the old content would stay there. A full frame every second
   // (about 10 ms) limits that to one second.
   if (!apMode && filOn && millis() - lastFullFrame >= 1000) { lastFullFrame = millis(); forceSend = true; }
+#endif
   loopStage = ST_IDLE;
 }

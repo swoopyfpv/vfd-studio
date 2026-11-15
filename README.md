@@ -27,6 +27,10 @@ Firmware and web apps for a **GP1294AI 256×48 VFD** (EEI Technology module EPC-
 
 Projects are plain JSON. The browser preview and the display use the same render core (JavaScript in `src/core.js`, C++ in `firmware/vfd_studio/render.h`) and produce identical pixels.
 
+## TFT Studio
+
+The [ESP32-8048S043C-I build](firmware/tft_studio/README.md) adds a native 800×480 touchscreen clock, three color themes and a saved 180° orientation for the LCD and touch. It uses the same web Studio, Builder and project format.
+
 ## Features
 
 **Firmware**

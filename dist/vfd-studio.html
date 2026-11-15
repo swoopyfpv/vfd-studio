@@ -1367,12 +1367,20 @@ $('btnMsg').onclick=()=>{const t=$('msgText').value.trim();if(!t)return;jpost('/
 $('btnReboot').onclick=()=>modal('Reboot display','<p class="note">The display restarts and is back online in about 10 seconds.</p>',[['Cancel'],['Reboot','hot',()=>{jpost('/api/reboot',{}).catch(()=>{});toast('Rebooting…');setTimeout(connect,12000);}]]);
 $('btnSettings').onclick=async()=>{
   let s;try{s=await(await devFetch('/api/settings')).json();}catch(e){return toast('Could not load settings');}
-  const supportsAutoBrightness=typeof s.autoBrightness==='boolean';
+  const panel=s.panel;
+  const supportsAutoBrightness=!panel&&typeof s.autoBrightness==='boolean';
   const supportsWifiTx=typeof s.wifiLowTx==='boolean';
   const wifiTxSettings=supportsWifiTx?`
     <label for="sWifiTx">Wi-Fi TX limit</label><div class="row"><select id="sWifiTx" aria-describedby="sWifiTxNote" style="width:auto"><option value="8.5">8.5 dBm</option><option value="default">ESP32 default</option></select>
     <span class="note" id="sWifiTxNote">${Number.isFinite(s.wifiTxDbm)?`Current limit ${s.wifiTxDbm} dBm. `:''}Reboot to apply.</span></div>
     <span class="note">Bluetooth</span><span>${s.bluetoothOn?'On':'Off'}</span>`:'';
+  const displaySettings=panel?`
+    <label for="sTheme">Panel theme</label><select id="sTheme"><option value="0">Ion</option><option value="1">Sodium</option><option value="2">Violet</option></select>
+    <label for="sAngle">Panel orientation</label><select id="sAngle"><option value="0">0°</option><option value="180">180°</option></select>
+    <label for="sBacklight">Backlight</label><div class="row"><input type="number" id="sBacklight" min="10" max="100" style="width:80px"> <span class="note">%</span></div>`:`
+    <label>Brightness limit</label><div class="row"><input type="number" id="sMaxBr" min="20" max="1023" style="width:80px"> <span class="note">tube level at 100 % (0–1023). Datasheet: below 300 delays aging.</span></div>
+    <span class="note">Auto brightness</span><label class="ck"><input type="checkbox" id="sAutoBrightness" aria-label="Auto brightness" aria-describedby="sAutoBrightnessNote" ${supportsAutoBrightness?'':'disabled'}> <span id="sAutoBrightnessNote">${supportsAutoBrightness?'Dim the display in darker rooms':'Requires a firmware update'}</span></label>
+    <label>Display refresh</label><div class="row"><input type="number" id="sReMin" min="0" max="1440" style="width:80px"> <span class="note">re-initialise the display every … minutes (short blink; fixes a frozen image). 0 = off</span></div>`;
   const hm=m=>p2(Math.floor(m/60))+':'+p2(m%60), mh=v=>{const[a,b]=(v||'0:0').split(':');return(+a)*60+(+b);};
   modal('Display settings',`<div class="fields">
     <label>Name</label><input type="text" id="sName"><div class="note full">Address becomes http://NAME.local after a reboot.</div>${wifiTxSettings}
@@ -1380,27 +1388,30 @@ $('btnSettings').onclick=async()=>{
     <label>Location</label><div class="row"><input type="text" id="sCity" placeholder="City" style="flex:1"><button class="btn sm" id="sFind">Search</button></div>
     <div class="full" id="sHits"></div>
     <label>Lat / Lon</label><div class="row"><input type="number" step="0.0001" id="sLat" style="width:48%"><input type="number" step="0.0001" id="sLon" style="width:48%"></div>
-    <label>Rotation</label><div class="row"><input type="number" id="sPlay" min="5" style="width:80px"> <span class="note">seconds per project (tick projects in the list)</span></div>
-    <label>Brightness limit</label><div class="row"><input type="number" id="sMaxBr" min="20" max="1023" style="width:80px"> <span class="note">tube level at 100 % (0–1023). Datasheet: below 300 delays aging.</span></div>
-    <span class="note">Auto brightness</span><label class="ck"><input type="checkbox" id="sAutoBrightness" aria-label="Auto brightness" aria-describedby="sAutoBrightnessNote" ${supportsAutoBrightness?'':'disabled'}> <span id="sAutoBrightnessNote">${supportsAutoBrightness?'Dim the display in darker rooms':'Requires a firmware update'}</span></label>
-    <label>Display refresh</label><div class="row"><input type="number" id="sReMin" min="0" max="1440" style="width:80px"> <span class="note">re-initialise the display every … minutes (short blink; fixes a frozen image). 0 = off</span></div>
+    <label for="sPlay">Playlist interval</label><div class="row"><input type="number" id="sPlay" min="5" style="width:80px"> <span class="note">seconds per project (tick projects in the list)</span></div>${displaySettings}
     <label>Night mode</label><label class="ck"><input type="checkbox" id="sNight">enabled</label>
     <label>From</label><input type="time" id="sFrom">
     <label>To</label><input type="time" id="sTo">
-    <label>At night</label><select id="sMode"><option value="dim">dim the display</option><option value="off">switch the tube off</option></select>
+    <label>At night</label><select id="sMode"><option value="dim">dim the display</option><option value="off">switch the ${panel?'backlight':'tube'} off</option></select>
     <label>Night level</label><input type="range" id="sLvl" min="0" max="255">
-  </div><div class="hr"></div><p class="note">Forget Wi-Fi restarts the display in setup mode (network VFD-SETUP-…). Holding the BOOT button for 5 seconds does the same.</p>`,
+  </div><div class="hr"></div><p class="note">Forget Wi-Fi restarts the display in setup mode (network ${panel?'TFT':'VFD'}-SETUP-…). Holding the BOOT button for 5 seconds does the same.</p>`,
   [['Forget Wi-Fi','hot',()=>{jpost('/api/wifi/forget',{}).catch(()=>{});toast('Restarting in setup mode');}],['Cancel'],['Save','pri',()=>{
-    jpost('/api/settings',{name:$('sName').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'')||'vfd',tz:$('sTz').value.trim(),nightOn:$('sNight').checked,nightFrom:mh($('sFrom').value),nightTo:mh($('sTo').value),nightMode:$('sMode').value,nightLevel:+$('sLvl').value,
+    jpost('/api/settings',{name:$('sName').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'')||(panel?'tft':'vfd'),tz:$('sTz').value.trim(),nightOn:$('sNight').checked,nightFrom:mh($('sFrom').value),nightTo:mh($('sTo').value),nightMode:$('sMode').value,nightLevel:+$('sLvl').value,
       city:$('sCity').value.trim(),...($('sLat').value===''||$('sLon').value===''?{noLoc:true}:{lat:+$('sLat').value,lon:+$('sLon').value}),playSec:Math.max(5,+$('sPlay').value||30),
-      ...(s.maxBright!=null?{maxBright:Math.min(1023,Math.max(20,+$('sMaxBr').value||300))}:{}),
+      ...(panel?{panel:{theme:+$('sTheme').value,rotation:+$('sAngle').value,backlight:Math.min(100,Math.max(10,parseInt($('sBacklight').value)||panel.backlight))}}:{}),
+      ...(!panel&&s.maxBright!=null?{maxBright:Math.min(1023,Math.max(20,+$('sMaxBr').value||300))}:{}),
       ...(supportsAutoBrightness?{autoBrightness:$('sAutoBrightness').checked}:{}),
       ...(supportsWifiTx?{wifiLowTx:$('sWifiTx').value==='8.5'}:{}),
-      ...(s.reinitMin!=null?{reinitMin:Math.min(1440,Math.max(0,parseInt($('sReMin').value)||0))}:{})})
+      ...(!panel&&s.reinitMin!=null?{reinitMin:Math.min(1440,Math.max(0,parseInt($('sReMin').value)||0))}:{})})
       .then(()=>{toast('Settings saved');setTimeout(wxRefresh,4000);},e=>toast('Save failed: '+e.message));}]]);
   $('sName').value=s.name;$('sTz').value=s.tz;$('sNight').checked=s.nightOn;$('sFrom').value=hm(s.nightFrom);$('sTo').value=hm(s.nightTo);$('sMode').value=s.nightMode;$('sLvl').value=s.nightLevel;
-  $('sCity').value=s.city||'';$('sLat').value=s.lat??'';$('sLon').value=s.lon??'';$('sPlay').value=s.playSec||30;$('sMaxBr').value=s.maxBright??300;$('sMaxBr').disabled=s.maxBright==null;$('sReMin').value=s.reinitMin??'';$('sReMin').disabled=s.reinitMin==null;
-  $('sAutoBrightness').checked=s.autoBrightness===true;
+  $('sCity').value=s.city||'';$('sLat').value=s.lat??'';$('sLon').value=s.lon??'';$('sPlay').value=s.playSec||30;
+  if(panel){$('sTheme').value=panel.theme;$('sAngle').value=panel.rotation;$('sBacklight').value=panel.backlight;}
+  else {
+    $('sMaxBr').value=s.maxBright??300;$('sMaxBr').disabled=s.maxBright==null;
+    $('sReMin').value=s.reinitMin??'';$('sReMin').disabled=s.reinitMin==null;
+    $('sAutoBrightness').checked=s.autoBrightness===true;
+  }
   if(supportsWifiTx)$('sWifiTx').value=s.wifiLowTx?'8.5':'default';
   $('sFind').onclick=()=>geoSearch($('sCity').value,$('sHits'),h=>{$('sCity').value=h.name;$('sLat').value=h.latitude.toFixed(4);$('sLon').value=h.longitude.toFixed(4);});
 };
